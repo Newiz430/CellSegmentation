@@ -10,22 +10,34 @@ class LystoDataset(Dataset):
 
     def __init__(self, filepath=None,
                  transform=None,
-                 train=True):
+                 train=True,
+                 kfold=10,
+                 interval=3,
+                 size=32):
 
         if filepath:
             f = h5py.File(filepath, 'r')
         else:
             raise Exception("Invalid data file.")
 
-        self.organs = []        # 全切片来源，array (20000)
-        self.images = []        # array ( 20000 * 299 * 299 * 3 )
-        self.labels = []        # 图像中的阳性细胞数目，array ( 20000 )
-        self.imageIDX = []      # 每个patch对应的图像号，array ( 20000 * n )
-        self.patches = []       # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
-        self.interval = 3       # 取实例的像素间隔
-        self.size = 32          # 一个实例的大小
+        if kfold <= 0:
+            raise Exception("Invalid k-fold cross-validation argument.")
+
+        self.train = train          # 训练集 / 验证集
+        self.kfold = kfold          # k 折交叉验证
+        self.organs = []            # 全切片来源，array ( 20000 )
+        self.images = []            # array ( 20000 * 299 * 299 * 3 )
+        self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
+        self.imageIDX = []          # 每个patch对应的图像号，array ( 20000 * n )
+        self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
+        self.interval = interval    # 取实例的像素间隔
+        self.size = size            # 一个实例的大小
 
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
+
+            if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
+                continue
+
             self.organs.append(organ)
             self.images.append(img)
             # self.labels.append(label)
@@ -100,18 +112,28 @@ def get_patches(image, interval=3, size=32):
 
 if __name__ == '__main__':
 
+    batch_size = 2
     imageSet = LystoDataset(filepath="D:/LYSTO/training.h5")
-    loader = DataLoader(imageSet, batch_size=1, shuffle=False)
+    imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", train=False)
+    train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 
     imageSet.setmode(1)
-    for idx, data in enumerate(loader):
-        print('Dry Run : [{}/{}]\r'.format(idx + 1, len(loader.dataset)))
-    print("Length of dataset: {}".format(len(loader.dataset)))
+    for idx, data in enumerate(train_loader):
+        print('Dry Run : [{}/{}]\r'.format(idx + 1, len(train_loader.dataset) // batch_size))
+    print("Length of dataset: {}".format(len(train_loader.dataset)))
+    for idx, data in enumerate(val_loader):
+        print('Dry Run : [{}/{}]\r'.format(idx + 1, len(val_loader.dataset) // batch_size))
+    print("Length of dataset: {}".format(len(val_loader.dataset)))
 
     # 查看第一张图片
-    print("The first image: ")
+    print("The first training image: ")
     plt.imshow(imageSet.images[0])
     print("Slide: {0}\nLabel: {1}".format(imageSet.organs[0], imageSet.labels[0]))
     print("Grids of patches: {}".format(imageSet.patches[0]))
-    print("Length of dataset: {}".format(len(loader.dataset)))
+
+    print("The first validation image: ")
+    plt.imshow(imageSet_val.images[0])
+    print("Slide: {0}\nLabel: {1}".format(imageSet_val.organs[0], imageSet_val.labels[0]))
+    print("Grids of patches: {}".format(imageSet_val.patches[0]))
 
