@@ -163,7 +163,7 @@ def train(trainset, valset, batch_size, total_epochs,
             val_index[:-1] = val_groups[1:] != val_groups[:-1]
             max_prob[val_groups[val_index]] = val_probs[val_index]
 
-            pred = [1 if prob >= 0.5 else 0 for prob in max_prob] # 每张切片由最大概率的 patch 得到的标签
+            pred = [1 if prob >= 0.5 else 0 for prob in max_prob]  # 每张切片由最大概率的 patch 得到的标签
             err, fpr, fnr = calc_err(pred, valset.labels)
             # 计算
             print('Validation\tEpoch: [{}/{}]\tError: {}\tFPR: {}\tFNR: {}\n'
