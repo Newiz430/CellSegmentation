@@ -50,7 +50,23 @@ print('Loading Dataset ...')
 imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans)
 imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, train=False)
 
-def train(trainset, valset, batch_size, total_epochs, test_every, model, criterion, optimizer, topk, output_path):
+
+def train(trainset, valset, batch_size, total_epochs,
+          test_every, model, criterion, optimizer,
+          topk, output_path):
+    """
+    :param trainset:        训练数据集
+    :param valset:          验证数据集
+    :param batch_size:      Dataloader 打包的小 batch 大小
+    :param total_epochs:    迭代次数
+    :param test_every:      每验证一轮间隔的迭代次数
+    :param model:           网络模型
+    :param criterion:       损失函数
+    :param optimizer:       优化器
+    :param topk:            每次选取的 top-k 实例个数
+    :param output_path:     保存模型文件的目录
+    """
+
     global max_acc
 
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False)
