@@ -14,6 +14,14 @@ class LystoDataset(Dataset):
                  kfold=10,
                  interval=3,
                  size=32):
+        """
+        :param filepath:    hdf5数据文件路径
+        :param transform:   数据预处理方式
+        :param train:       训练集 / 验证集，默认为训练集
+        :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
+        :param interval:    在切片上选取 patch 的间隔，默认值为 3px
+        :param size:        一个 patch 的边长，默认值为 32px
+        """
 
         if filepath:
             f = h5py.File(filepath, 'r')
@@ -23,15 +31,15 @@ class LystoDataset(Dataset):
         if kfold <= 0:
             raise Exception("Invalid k-fold cross-validation argument.")
 
-        self.train = train          # 训练集 / 验证集
-        self.kfold = kfold          # k 折交叉验证
+        self.train = train
+        self.kfold = kfold
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
-        self.imageIDX = []          # 每个patch对应的图像号，array ( 20000 * n )
+        self.imageIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
         self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
-        self.interval = interval    # 取实例的像素间隔
-        self.size = size            # 一个实例的大小
+        self.interval = interval
+        self.size = size
 
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
 
