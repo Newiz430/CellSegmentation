@@ -12,15 +12,17 @@ class LystoDataset(Dataset):
                  transform=None,
                  train=True,
                  kfold=10,
-                 interval=3,
-                 size=32):
+                 interval=10,
+                 size=32,
+                 num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
         :param transform:   数据预处理方式
         :param train:       训练集 / 验证集，默认为训练集
         :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
-        :param interval:    在切片上选取 patch 的间隔，默认值为 3px
+        :param interval:    在切片上选取 patch 的间隔，默认值为 10px
         :param size:        一个 patch 的边长，默认值为 32px
+        :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
         if filepath:
@@ -41,18 +43,24 @@ class LystoDataset(Dataset):
         self.interval = interval
         self.size = size
 
+        imageIDX = -1
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
+
+            # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
+            if num_of_imgs != 0 and i == num_of_imgs:
+                break
 
             if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
                 continue
 
+            imageIDX += 1
             self.organs.append(organ)
             self.images.append(img)
             # self.labels.append(label)
             self.labels.append(1 if label != 0 else 0) # TODO: 暂时把标签当作非计数式标签处理
             p = get_patches(img, self.interval, self.size)
             self.patches.append(p) # 获取 32 * 32 的实例
-            self.imageIDX.extend([i] * len(p))
+            self.imageIDX.extend([imageIDX] * len(p))
 
         self.mode = None
         self.transform = transform
@@ -99,7 +107,7 @@ class LystoDataset(Dataset):
             raise Exception("Something wrong in setmode.")
 
 
-def get_patches(image, interval=3, size=32):
+def get_patches(image, interval=10, size=32):
     """
     在每张图片上生成小patch实例。
     :param image: 输入图片矩阵，299 x 299 x 3
@@ -121,12 +129,13 @@ def get_patches(image, interval=3, size=32):
 if __name__ == '__main__':
 
     batch_size = 2
-    imageSet = LystoDataset(filepath="D:/LYSTO/training.h5")
-    imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", train=False)
+    imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", interval=150, size=32, num_of_imgs=11)
+    imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", interval=150, size=32, num_of_imgs=11, train=False)
     train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 
     imageSet.setmode(1)
+    imageSet_val.setmode(1)
     for idx, data in enumerate(train_loader):
         print('Dry Run : [{}/{}]\r'.format(idx + 1, len(train_loader.dataset) // batch_size))
     print("Length of dataset: {}".format(len(train_loader.dataset)))
@@ -137,11 +146,13 @@ if __name__ == '__main__':
     # 查看第一张图片
     print("The first training image: ")
     plt.imshow(imageSet.images[0])
+    plt.show()
     print("Slide: {0}\nLabel: {1}".format(imageSet.organs[0], imageSet.labels[0]))
     print("Grids of patches: {}".format(imageSet.patches[0]))
 
     print("The first validation image: ")
     plt.imshow(imageSet_val.images[0])
+    plt.show()
     print("Slide: {0}\nLabel: {1}".format(imageSet_val.organs[0], imageSet_val.labels[0]))
     print("Grids of patches: {}".format(imageSet_val.patches[0]))
 

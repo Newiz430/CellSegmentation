@@ -27,11 +27,11 @@ parser.add_argument('--output', type=str, default='.', help='name of output file
 # parser.add_argument('--resume', type=str, default=None, help='continue training from a checkpoint')
 args = parser.parse_args()
 
-torch.manual_seed(1)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1)
-    print('\nCUDA is available.\n')
-# TODO: GPU训练
+    print('\nGPU is available.\n')
+else:
+    torch.manual_seed(1)
 
 max_acc = 0
 
@@ -40,15 +40,17 @@ model = models.resnet18(pretrained=True)
 model.fc = nn.Linear(model.fc.in_features, 2)
 
 normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-trans = transforms.Compose([transforms.ToTensor(), normalize])  # TODO: 设计归一化方式
+trans = transforms.Compose([transforms.ToTensor(), normalize])
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
-print('Loading Dataset ...')
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+model.to(device)
 
-imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans)
-imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, train=False)
+print('Loading Dataset ...')
+imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, interval=150, num_of_imgs=51)
+imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, train=False, interval=150, num_of_imgs=11)
 
 
 def train(trainset, valset, batch_size, total_epochs,
