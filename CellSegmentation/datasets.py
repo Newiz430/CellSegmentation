@@ -59,7 +59,7 @@ class LystoDataset(Dataset):
             # self.labels.append(label)
             self.labels.append(1 if label != 0 else 0) # TODO: 暂时把标签当作非计数式标签处理
             p = get_patches(img, self.interval, self.size)
-            self.patches.append(p) # 获取 32 * 32 的实例
+            self.patches.extend(p) # 获取 32 * 32 的实例
             self.imageIDX.extend([imageIDX] * len(p))
 
         self.mode = None
@@ -129,8 +129,8 @@ def get_patches(image, interval=10, size=32):
 if __name__ == '__main__':
 
     batch_size = 2
-    imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", interval=150, size=32, num_of_imgs=11)
-    imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", interval=150, size=32, num_of_imgs=11, train=False)
+    imageSet = LystoDataset(filepath="LYSTO/training.h5", interval=150, size=32, num_of_imgs=51)
+    imageSet_val = LystoDataset(filepath="LYSTO/training.h5", interval=150, size=32, num_of_imgs=51, train=False)
     train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 

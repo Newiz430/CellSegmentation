@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import argparse
+import cv2
+from PIL import Image
 
 import torch
 import torch.optim as optim
@@ -46,16 +48,15 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 model.to(device)
 
 print('Loading Dataset ...')
-imageSet = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, interval=150, num_of_imgs=51)
-imageSet_val = LystoDataset(filepath="D:/LYSTO/training.h5", transform=trans, train=False, interval=150, num_of_imgs=11)
+imageSet = LystoDataset(filepath="LYSTO/training.h5", transform=trans, interval=150, num_of_imgs=51)
+imageSet_val = LystoDataset(filepath="LYSTO/training.h5", transform=trans, train=False, interval=150, num_of_imgs=51)
 
 
-def train(trainset, valset, batch_size, total_epochs,
-          test_every, model, criterion, optimizer,
-          topk, output_path):
+def train(trainset, valset, batch_size, total_epochs, test_every, model, criterion, optimizer, topk, output_path):
     """
     :param trainset:        训练数据集
     :param valset:          验证数据集
@@ -155,15 +156,32 @@ def train(trainset, valset, batch_size, total_epochs,
             # TODO: 暂时把标签当作非计数式标签处理
             max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 patch
             max_prob[:] = np.nan
+            max_patch = np.empty((len(valset.labels), 2))  # max_prob 对应的 patch 左上角坐标
             order = np.lexsort((val_probs, val_groups))
             # 排序
             val_groups = val_groups[order]
             val_probs = val_probs[order]
+            val_patches = val_patches[order]
             # 取最大
             val_index = np.empty(len(val_groups), 'bool')
             val_index[-1] = True
             val_index[:-1] = val_groups[1:] != val_groups[:-1]
             max_prob[val_groups[val_index]] = val_probs[val_index]
+            max_patch[val_groups[val_index]] = val_patches[val_index]
+
+            # 生成热图
+            for i, img in enumerate(valset.images):
+                mask = np.zeros((img.shape[0], img.shape[1]))
+                for idx in val_groups[val_index]:
+                    if idx == i:
+                        print("prob_{0}:{1}".format(idx, max_prob[idx]))
+                        patch_mask = np.full((valset.size, valset.size), max_prob[idx])
+                        grid = (int(max_patch[idx][0]),int(max_patch[idx][1]))
+                        mask[grid[0] : grid[0] + valset.size,
+                             grid[1] : grid[1] + valset.size] = patch_mask
+                mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
+                img = img * 0.5 + mask * 0.5
+                Image.fromarray(np.uint8(img)).save('output/valset_{}.png'.format(i))
 
             pred = [1 if prob >= 0.5 else 0 for prob in max_prob]  # 每张切片由最大概率的 patch 得到的标签
             err, fpr, fnr = calc_err(pred, valset.labels)
