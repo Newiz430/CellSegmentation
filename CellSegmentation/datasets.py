@@ -69,7 +69,7 @@ class LystoDataset(Dataset):
         self.mode = mode
 
     def make_train_data(self, idxs, shuffle=True): # 用于 mode 2，制作训练用数据集
-        self.train_data = [(self.imageIDX[i], self.patches[i // len(self.patches[0])][i % len(self.patches[0])],
+        self.train_data = [(self.imageIDX[i], self.patches[i],
                             self.labels[self.imageIDX[i]]) for i in idxs]
         if shuffle:
             self.train_data = random.sample(self.train_data, len(self.train_data))
@@ -79,7 +79,7 @@ class LystoDataset(Dataset):
         # organ = self.organs[idx]
 
         if self.mode == 1: # top-k 选取模式
-            (x, y) = self.patches[idx // len(self.patches[0])][idx % len(self.patches[0])]
+            (x, y) = self.patches[idx]
             patch = self.images[self.imageIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
             if self.transform is not None:
                 patch = self.transform(patch)
@@ -109,7 +109,7 @@ class LystoDataset(Dataset):
 
 def get_patches(image, interval=10, size=32):
     """
-    在每张图片上生成小patch实例。
+    在每张图片上生成小 patch 实例。
     :param image: 输入图片矩阵，299 x 299 x 3
     :param interval: 取patch坐标点的间隔
     :param size: 单个patch的大小
