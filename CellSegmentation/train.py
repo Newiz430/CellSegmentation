@@ -90,13 +90,13 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
                 print('Inference\tEpoch: [{}/{}]\tBatch: [{}/{}]'
                       .format(epoch, total_epochs, i + 1, len(train_loader)))
                 # softmax 输出[[a,b],[c,d]] shape = batch_size*2
-                output = F.softmax(model(input[0]), dim=1)
+                output = F.softmax(model(input[0].to(device)), dim=1)
                 # detach()[:,1]取出softmax得到的概率，产生：[b, d, ...]
                 # input.size(0)返回batch中的实例数量
                 probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
 
         # 找出top-k
-        probs = probs.numpy()
+        probs = probs.cpu().numpy()
         groups = np.array(trainset.imageIDX)
         order = np.lexsort((probs, groups))
         groups = groups[order]
@@ -115,7 +115,7 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
         model.train()
         train_loss = 0.
         for i, (data, label) in enumerate(train_loader):
-            output = model(data)
+            output = model(data.to(device))
             # reset gradients
             optimizer.zero_grad()
             # calculate loss
@@ -150,7 +150,7 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
                     val_probs[i * batch_size:i * batch_size + input[0].size(0)] \
                         = val_output.detach()[:, 1].clone()
 
-            val_probs = val_probs.numpy()
+            val_probs = val_probs.cpu().numpy()
             val_groups = np.array(valset.imageIDX)
 
             # TODO: 暂时把标签当作非计数式标签处理
