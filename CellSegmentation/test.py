@@ -4,6 +4,7 @@ import argparse
 from tqdm import tqdm
 import cv2
 from PIL import Image
+import csv
 
 import torch
 from torch import nn
@@ -54,11 +55,13 @@ def test(testset, batch_size, model, topk, output_path):
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False)
 
     # open output file
-    fconv = open(os.path.join(output_path,'pred.csv'), 'w')
-    fconv.write('patch_size={},interval={}\n'.format(testset.size, testset.interval))
-    fconv.write('grid,prob\n')
+    fconv = open(os.path.join(output_path, 'pred.csv'), 'w', newline="")
+    w = csv.writer(fconv)
+    w.writerow('patch_size={}'.format(testset.size))
+    w.writerow('interval={}'.format(testset.interval))
+    w.writerow(['grid','prob'])
     fconv.close()
-    # 热图中各个 patch 的信息保存在output_path/pred.csv
+    # 热图中各个 patch 的信息保存在 output_path/pred.csv
 
     print('Start testing ...')
 
@@ -98,8 +101,9 @@ def test(testset, batch_size, model, topk, output_path):
                  grid[1] : grid[1] + testset.size] = patch_mask
             # 输出信息
             print("prob_{}:{}".format(i, max_probs[idx + i * topk]))
-            fconv = open(os.path.join(args.output, 'pred.csv'), 'a')
-            fconv.write('{},{}\n'.format(grid, max_probs[idx + i * topk]))
+            fconv = open(os.path.join(output_path, 'pred.csv'), 'w', newline="")
+            w = csv.writer(fconv)
+            w.writerow(['{}'.format(grid), max_probs[idx + i * topk]])
             fconv.close()
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
