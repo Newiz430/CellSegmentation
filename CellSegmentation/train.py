@@ -2,8 +2,8 @@ import os
 import numpy as np
 import argparse
 from tqdm import tqdm
-import cv2
-from PIL import Image
+# import cv2
+# from PIL import Image
 
 import torch
 import torch.optim as optim
@@ -12,8 +12,6 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
-
-from datasets import LystoDataset
 
 # Training settings
 parser = argparse.ArgumentParser(description='Training')
@@ -27,7 +25,7 @@ parser.add_argument('--topk', default=1, type=int,
                     help='top k tiles are assumed to be of the same class as the slide (default: 1, standard MIL)')
 parser.add_argument('--interval', type=int, default=10, help='sample interval of patches (default: 10)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
-parser.add_argument('--device', type=str, default='0', help='CUDA device if available')
+parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
 parser.add_argument('--output', type=str, default='.', help='name of output file')
 # TODO: 分段训练
 # parser.add_argument('--resume', type=str, default=None, help='continue training from a checkpoint')
@@ -228,6 +226,7 @@ def calc_err(pred, real):
 
 
 if __name__ == "__main__":
+    from datasets import LystoDataset
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="LYSTO/training.h5", transform=trans,

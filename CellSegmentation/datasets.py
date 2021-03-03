@@ -107,6 +107,64 @@ class LystoDataset(Dataset):
             raise Exception("Something wrong in setmode.")
 
 
+class LystoTestset(Dataset):
+
+    def __init__(self, filepath=None,
+                 transform=None,
+                 interval=10,
+                 size=32,
+                 num_of_imgs=0):
+        """
+        :param filepath:    hdf5数据文件路径
+        :param transform:   数据预处理方式
+        :param interval:    在切片上选取 patch 的间隔，默认值为 10px
+        :param size:        一个 patch 的边长，默认值为 32px
+        :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
+        """
+
+        if filepath:
+            f = h5py.File(filepath, 'r')
+        else:
+            raise Exception("Invalid data file.")
+
+        self.organs = []            # 全切片来源，array ( 20000 )
+        self.images = []            # array ( 20000 * 299 * 299 * 3 )
+        self.imageIDX = []          # 每个patch对应的图像编号，array ( 20000 * n )
+        self.patches = []           # 每张图像中选取的像素 patch 的左上角坐标点，array ( 20000 * n * 2 )
+        self.interval = interval
+        self.size = size
+
+        imageIDX = -1
+        for i, (organ, img) in enumerate(zip(f['organ'], f['x'])):
+
+            # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
+            if num_of_imgs != 0 and i == num_of_imgs:
+                break
+
+            imageIDX += 1
+            self.organs.append(organ)
+            self.images.append(img)
+            p = get_patches(img, self.interval, self.size)
+            self.patches.extend(p) # 获取 32 * 32 的实例
+            self.imageIDX.extend([imageIDX] * len(p))
+
+        self.transform = transform
+
+    def __getitem__(self, idx):
+
+        # organ = self.organs[idx]
+
+        (x, y) = self.patches[idx]
+        patch = self.images[self.imageIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
+        if self.transform is not None:
+            patch = self.transform(patch)
+
+        return patch
+
+    def __len__(self):
+        return len(self.imageIDX)
+
+
 def get_patches(image, interval=10, size=32):
     """
     在每张图片上生成小 patch 实例。
@@ -119,9 +177,6 @@ def get_patches(image, interval=10, size=32):
     for x in np.arange(0, image.shape[0] - size + 1, interval):
         for y in np.arange(0, image.shape[1] - size + 1, interval):
             patches.append((x, y))  # n x 2
-
-    # for i, (x, y) in enumerate(patches):
-    #     patches[i] = image[x:x+size-1, y:y+size-1]  # n x 32 x 32 x 3
 
     return patches
 
