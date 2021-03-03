@@ -210,4 +210,3 @@ if __name__ == '__main__':
     plt.show()
     print("Slide: {0}\nLabel: {1}".format(imageSet_val.organs[0], imageSet_val.labels[0]))
     print("Grids of patches: {}".format(imageSet_val.patches[0]))
-

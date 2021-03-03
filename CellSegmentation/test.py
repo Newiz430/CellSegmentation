@@ -66,7 +66,7 @@ def test(testset, batch_size, model, topk, output_path):
     model.eval()
     probs = torch.FloatTensor(len(test_loader.dataset))
     with torch.no_grad():
-        bar = tqdm(enumerate(test_loader))
+        bar = tqdm(enumerate(test_loader), total=len(test_loader))
         for i, input in bar:
             bar.set_postfix(batch="[{}/{}]".format(i + 1, len(test_loader)))
             output = F.softmax(model(input.to(device)), dim=1)
@@ -75,10 +75,6 @@ def test(testset, batch_size, model, topk, output_path):
     probs = probs.cpu().numpy()
     groups = np.array(testset.imageIDX)
     patches = np.array(testset.patches)
-
-    max_probs = np.empty(len(testset.images) * topk)
-    max_probs[:] = np.nan
-    max_patches = np.empty((len(testset.images) * topk, 2))
 
     order = np.lexsort((probs, groups))
     groups = groups[order]
@@ -89,27 +85,26 @@ def test(testset, batch_size, model, topk, output_path):
     index[-topk:] = True
     index[:-topk] = groups[topk:] != groups[:-topk]
 
-    max_probs[groups[index]] = probs[index]
-    max_patches[groups[index]] = patches[index]
+    max_probs = probs[index]
+    max_patches = patches[index]
 
     # 生成热图
     for i, img in enumerate(testset.images):
         mask = np.zeros((img.shape[0], img.shape[1]))
-        for idx in groups[index]:
-            if idx == i: # TODO: 优化写法
-                patch_mask = np.full((testset.size, testset.size), max_probs[idx])
-                grid = (int(max_patches[idx][0]), int(max_patches[idx][1]))
-                mask[grid[0] : grid[0] + testset.size,
-                     grid[1] : grid[1] + testset.size] = patch_mask
-                # 输出信息
-                print("prob_{}:{}".format(idx, max_probs[idx]))
-                fconv = open(os.path.join(args.output, 'pred.csv'), 'a')
-                fconv.write('{},{}\n'.format(grid, max_probs[idx]))
-                fconv.close()
+        for idx in range(topk):
+            patch_mask = np.full((testset.size, testset.size), max_probs[idx + i * topk])
+            grid = (int(max_patches[idx + i * topk][0]), int(max_patches[idx + i * topk][1]))
+            mask[grid[0] : grid[0] + testset.size,
+                 grid[1] : grid[1] + testset.size] = patch_mask
+            # 输出信息
+            print("prob_{}:{}".format(i, max_probs[idx + i * topk]))
+            fconv = open(os.path.join(args.output, 'pred.csv'), 'a')
+            fconv.write('{},{}\n'.format(grid, max_probs[idx + i * topk]))
+            fconv.close()
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
         img = img * 0.5 + mask * 0.5
-        Image.fromarray(np.uint8(img)).save('output/valset_{}.png'.format(i))
+        Image.fromarray(np.uint8(img)).save('output/test_{}.png'.format(i))
 
 
 if __name__ == "__main__":
