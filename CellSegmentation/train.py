@@ -93,29 +93,31 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
             for i, input in bar:
                 bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
                                 batch="[{}/{}]".format(i + 1, len(train_loader)))
-                # softmax 输出[[a,b],[c,d]] shape = batch_size*2
+                # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
                 output = F.softmax(model(input[0].to(device)), dim=1)
-                # detach()[:,1]取出softmax得到的概率，产生：[b, d, ...]
-                # input.size(0)返回batch中的实例数量
+                # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
+                # input.size(0) 返回 batch 中的实例数量
                 probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
 
-        # 找出top-k
+        # 找出 top-k 和 bottom-k
         probs = probs.cpu().numpy()
         groups = np.array(trainset.imageIDX)
         order = np.lexsort((probs, groups))
-        groups = groups[order]
-        # probs = probs[order]
-        index = np.empty(len(groups), 'bool')
-        index[-topk:] = True
-        # 同时把属于每个slide的、pred最大的k个实例挑出来，放入topk中
-        index[:-topk] = groups[topk:] != groups[:-topk]
+
+        pos_index = np.empty(len(groups), 'bool')
+        neg_index = np.empty(len(groups), 'bool')
+        pos_index[-topk:] = True
+        # 同时把属于每个 slide 的、pred 最大和最小的 k 个实例挑出来，放入 topk 中
+        pos_index[:-topk] = groups[topk:] != groups[:-topk]
+        neg_index[:topk] = True
+        neg_index[topk:] = groups[:-topk] != groups[topk:]
 
         # 根据top-k的分类，制作迭代使用的数据集
-        trainset.make_train_data(list(order[index]))
+        trainset.make_train_data(list(order[pos_index]), list(order[neg_index]))
 
         trainset.setmode(2)
 
-        # 训练
+        # training
         model.train()
         train_loss = 0.
         for i, (data, label) in enumerate(train_loader):

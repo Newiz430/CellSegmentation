@@ -59,7 +59,7 @@ def test(testset, batch_size, model, topk, output_path):
     w = csv.writer(fconv)
     w.writerow('patch_size={}'.format(testset.size))
     w.writerow('interval={}'.format(testset.interval))
-    w.writerow(['grid','prob'])
+    w.writerow(['grid', 'prob'])
     fconv.close()
     # 热图中各个 patch 的信息保存在 output_path/pred.csv
 

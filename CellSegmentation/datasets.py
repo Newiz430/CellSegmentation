@@ -68,9 +68,12 @@ class LystoDataset(Dataset):
     def setmode(self, mode):
         self.mode = mode
 
-    def make_train_data(self, idxs, shuffle=True): # 用于 mode 2，制作训练用数据集
+    def make_train_data(self, pos_idxs, neg_idxs, shuffle=True): # 用于 mode 2，制作训练用数据集，包括正样本数据（ 1 ）和负样本数据（ 0 ）
+        # 对于 topk，当 patch 对应的切片的 label 为 1 时标签为 1 ，否则为 0
         self.train_data = [(self.imageIDX[i], self.patches[i],
-                            self.labels[self.imageIDX[i]]) for i in idxs]
+                            self.labels[self.imageIDX[i]]) for i in pos_idxs]
+        # 对于 bottomk，其标签总是 0
+        self.train_data.extend([(self.imageIDX[i], self.patches[i], 0) for i in neg_idxs])
         if shuffle:
             self.train_data = random.sample(self.train_data, len(self.train_data))
 
