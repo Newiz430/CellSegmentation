@@ -15,10 +15,11 @@ import torchvision.transforms as transforms
 
 parser = argparse.ArgumentParser(description='Testing & Heatmap')
 parser.add_argument('--model', type=str, default='checkpoint_best.pth', help='path to pretrained model')
-parser.add_argument('--batch_size', type=int, default=2, help='mini-batch size (default: 2)')
-parser.add_argument('--topk', default=1, type=int,
-                    help='top k tiles are assumed to be of the same class as the slide (default: 1, standard MIL)')
-parser.add_argument('--interval', type=int, default=10, help='sample interval of patches (default: 10)')
+parser.add_argument('--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
+parser.add_argument('--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
+parser.add_argument('--topk', default=10, type=int,
+                    help='top k tiles are assumed to be of the same class as the slide (default: 10, standard MIL)')
+parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
 parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
 parser.add_argument('--output', type=str, default='.', help='path of output details .csv file')
@@ -43,16 +44,17 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 model.to(device)
 
 
-def test(testset, batch_size, model, topk, output_path):
+def test(testset, batch_size, workers, model, topk, output_path):
     """
     :param testset:         测试数据集
     :param batch_size:      Dataloader 打包的小 batch 大小
+    :param workers:         Dataloader 使用的进程数
     :param model:           网络模型
     :param topk:            每次选取的 top-k 实例个数
     :param output_path:     保存模型文件的目录
     """
 
-    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
     # open output file
     fconv = open(os.path.join(output_path, 'pred.csv'), 'w', newline="")
@@ -97,8 +99,8 @@ def test(testset, batch_size, model, topk, output_path):
         for idx in range(topk):
             patch_mask = np.full((testset.size, testset.size), max_probs[idx + i * topk])
             grid = (int(max_patches[idx + i * topk][0]), int(max_patches[idx + i * topk][1]))
-            mask[grid[0] : grid[0] + testset.size,
-                 grid[1] : grid[1] + testset.size] = patch_mask
+            mask[grid[0]: grid[0] + testset.size,
+                 grid[1]: grid[1] + testset.size] = patch_mask
             # 输出信息
             print("prob_{}:{}".format(i, max_probs[idx + i * topk]))
             fconv = open(os.path.join(output_path, 'pred.csv'), 'w', newline="")
@@ -116,6 +118,6 @@ if __name__ == "__main__":
 
     print('Loading test set ...')
     imageSet_test = LystoTestset(filepath="LYSTO/testing.h5", transform=trans,
-                            interval=args.interval, size=args.patch_size, num_of_imgs=5)
+                                 interval=args.interval, size=args.patch_size, num_of_imgs=20)
 
-    test(imageSet_test, batch_size=args.batch_size, model=model, topk=args.topk, output_path='.')
+    test(imageSet_test, batch_size=args.batch_size, workers=args.workers, model=model, topk=args.topk, output_path='.')

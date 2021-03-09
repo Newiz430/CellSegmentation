@@ -17,13 +17,14 @@ import torchvision.transforms as transforms
 parser = argparse.ArgumentParser(description='Training')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
-parser.add_argument('--batch_size', type=int, default=2, help='mini-batch size (default: 2)')
+parser.add_argument('--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
 parser.add_argument('--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
-parser.add_argument('--test_every', default=10, type=int, help='test on val every (default: 10)')
-parser.add_argument('--topk', default=1, type=int,
-                    help='top k tiles are assumed to be of the same class as the slide (default: 1, standard MIL)')
-parser.add_argument('--interval', type=int, default=10, help='sample interval of patches (default: 10)')
+parser.add_argument('--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
+parser.add_argument('--test_every', default=1, type=int, help='test on val every (default: 1)')
+parser.add_argument('--topk', default=10, type=int,
+                    help='top k tiles are assumed to be of the same class as the slide (default: 10, standard MIL)')
+parser.add_argument('--interval', type=int, default=20, help='sample interval of patches (default: 20)')
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
 parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
 parser.add_argument('--output', type=str, default='.', help='name of output file')
@@ -53,11 +54,13 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 model.to(device)
 
-def train(trainset, valset, batch_size, total_epochs, test_every, model, criterion, optimizer, topk, output_path):
+
+def train(trainset, valset, batch_size, workers, total_epochs, test_every, model, criterion, optimizer, topk, output_path):
     """
     :param trainset:        训练数据集
     :param valset:          验证数据集
     :param batch_size:      Dataloader 打包的小 batch 大小
+    :param workers:         Dataloader 使用的进程数
     :param total_epochs:    迭代次数
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
@@ -69,11 +72,11 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
 
     global max_acc
 
-    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False)
-    val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
+    val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
     # open output file
-    fconv = open(os.path.join(output_path,'convergence.csv'), 'w')
+    fconv = open(os.path.join(output_path, 'convergence.csv'), 'w')
     fconv.write('epoch,metric,value\n')
     fconv.close()
     # 结果保存在output_path/convergence.csv
@@ -89,10 +92,11 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
         probs = torch.FloatTensor(len(train_loader.dataset))
         with torch.no_grad():
             # 禁止反向传播
-            bar = tqdm(enumerate(train_loader), total=len(train_loader))
-            for i, input in bar:
-                bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs),
-                                batch="[{}/{}]".format(i + 1, len(train_loader)))
+            patch_bar = tqdm(enumerate(train_loader), total=len(train_loader))
+            for i, input in patch_bar:
+                patch_bar.set_postfix(step="patch forwarding",
+                                      epoch="[{}/{}]".format(epoch, total_epochs),
+                                      batch="[{}/{}]".format(i + 1, len(train_loader)))
                 # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
                 output = F.softmax(model(input[0].to(device)), dim=1)
                 # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
@@ -103,6 +107,7 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
         probs = probs.cpu().numpy()
         groups = np.array(trainset.imageIDX)
         order = np.lexsort((probs, groups))
+        groups = groups[order] # 对 imageIDX 排序，以取 topk 和 bottomk
 
         pos_index = np.empty(len(groups), 'bool')
         neg_index = np.empty(len(groups), 'bool')
@@ -120,7 +125,12 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
         # training
         model.train()
         train_loss = 0.
-        for i, (data, label) in enumerate(train_loader):
+        train_bar = tqdm(enumerate(train_loader), total=len(train_loader))
+        for i, (data, label) in train_bar:
+            train_bar.set_postfix(step="training",
+                                  epoch="[{}/{}]".format(epoch, total_epochs),
+                                  batch="[{}/{}]".format(i + 1, len(train_loader)))
+
             output = model(data.to(device))
             # reset gradients
             optimizer.zero_grad()
@@ -217,13 +227,14 @@ def train(trainset, valset, batch_size, total_epochs, test_every, model, criteri
                 }
                 torch.save(obj, os.path.join(output_path, 'checkpoint_best.pth'))
 
+
 def calc_err(pred, real):
     pred = np.array(pred)
     real = np.array(real)
     neq = np.not_equal(pred, real)
-    err = float(neq.sum())/pred.shape[0]
-    fpr = float(np.logical_and(pred==1,neq).sum())/(real==0).sum()
-    fnr = float(np.logical_and(pred==0,neq).sum())/(real==1).sum()
+    err = float(neq.sum()) / pred.shape[0]
+    fpr = float(np.logical_and(pred == 1, neq).sum()) / (real == 0).sum()
+    fnr = float(np.logical_and(pred == 0, neq).sum()) / (real == 1).sum()
     return err, fpr, fnr
 
 
@@ -232,9 +243,10 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="LYSTO/training.h5", transform=trans,
-                            interval=args.interval, size=args.patch_size)
+                            interval=args.interval, size=args.patch_size, num_of_imgs=51)
     imageSet_val = LystoDataset(filepath="LYSTO/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=args.patch_size)
+                                interval=args.interval, size=args.patch_size, num_of_imgs=51)
 
-    train(imageSet, imageSet_val, batch_size=args.batch_size, total_epochs=args.epochs, test_every=args.test_every,
-          model=model, criterion=criterion, optimizer=optimizer, topk=args.topk, output_path=args.output)
+    train(imageSet, imageSet_val, batch_size=args.batch_size, workers=args.workers, total_epochs=args.epochs,
+          test_every=args.test_every, model=model, criterion=criterion, optimizer=optimizer, topk=args.topk,
+          output_path=args.output)
