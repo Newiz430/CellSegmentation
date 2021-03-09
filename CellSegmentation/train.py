@@ -246,9 +246,9 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="LYSTO/training.h5", transform=trans,
-                            interval=args.interval, size=args.patch_size, num_of_imgs=51)
+                            interval=args.interval, size=args.patch_size)
     imageSet_val = LystoDataset(filepath="LYSTO/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=args.patch_size, num_of_imgs=51)
+                                interval=args.interval, size=args.patch_size)
 
     train(imageSet, imageSet_val, batch_size=args.batch_size, workers=args.workers, total_epochs=args.epochs,
           test_every=args.test_every, model=model, criterion=criterion, optimizer=optimizer, topk=args.topk,
