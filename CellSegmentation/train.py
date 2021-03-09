@@ -107,10 +107,13 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
         probs = probs.cpu().numpy()
         groups = np.array(trainset.imageIDX)
         order = np.lexsort((probs, groups))
-        groups = groups[order] # 对 imageIDX 排序，以取 topk 和 bottomk
 
-        pos_index = np.empty(len(groups), 'bool')
-        neg_index = np.empty(len(groups), 'bool')
+        sorted_idx = np.empty(len(order), 'int')
+        for i, ord in enumerate(order):
+            sorted_idx[ord] = i
+
+        pos_index = np.empty(len(sorted_idx), 'bool')
+        neg_index = np.empty(len(sorted_idx), 'bool')
         pos_index[-topk:] = True
         # 同时把属于每个 slide 的、pred 最大和最小的 k 个实例挑出来，放入 topk 中
         pos_index[:-topk] = groups[topk:] != groups[:-topk]
@@ -118,7 +121,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
         neg_index[topk:] = groups[:-topk] != groups[topk:]
 
         # 根据top-k的分类，制作迭代使用的数据集
-        trainset.make_train_data(list(order[pos_index]), list(order[neg_index]))
+        trainset.make_train_data(list(sorted_idx[pos_index]), list(sorted_idx[neg_index]))
 
         trainset.setmode(2)
 
