@@ -28,8 +28,7 @@ parser.add_argument('--interval', type=int, default=20, help='sample interval of
 parser.add_argument('--patch_size', type=int, default=32, help='size of each patch (default: 32)')
 parser.add_argument('--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
 parser.add_argument('--output', type=str, default='.', help='name of output file')
-# TODO: 分段训练
-# parser.add_argument('--resume', type=str, default=None, help='continue training from a checkpoint')
+# parser.add_argument('--resume', type=str, default=None, help='continue training from a checkpoint file.pth')
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -39,10 +38,14 @@ else:
     torch.manual_seed(1)
 
 max_acc = 0
+resume = False
 
 print('Init Model ...')
 model = models.resnet18(pretrained=True)
 model.fc = nn.Linear(model.fc.in_features, 2)
+# if args.resume:
+#     resume = True
+#     model.load_state_dict(torch.load(args.resume)['state_dict'])
 
 normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 trans = transforms.Compose([transforms.ToTensor(), normalize])
@@ -70,7 +73,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
     :param output_path:     保存模型文件的目录
     """
 
-    global max_acc
+    global max_acc, resume
 
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
     val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
@@ -82,6 +85,8 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
     # 结果保存在output_path/convergence.csv
 
     print('Start training ...')
+    # if resume:
+    #     print('Resuming from the checkpoint (epochs: {}).'.format(model['epoch']))
 
     for epoch in range(1, total_epochs + 1):
 
@@ -108,12 +113,13 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
         groups = np.array(trainset.imageIDX)
         order = np.lexsort((probs, groups))
 
-        sorted_idx = np.empty(len(order), 'int')
-        for i, ord in enumerate(order):
-            sorted_idx[ord] = i
+        groups = groups[order]
+        # sorted_idx = np.empty(len(order), 'int')
+        # for i, ord in enumerate(order):
+        #     sorted_idx[ord] = i
 
-        pos_index = np.empty(len(sorted_idx), 'bool')
-        neg_index = np.empty(len(sorted_idx), 'bool')
+        pos_index = np.empty(len(groups), 'bool')
+        neg_index = np.empty(len(groups), 'bool')
         pos_index[-topk:] = True
         # 同时把属于每个 slide 的、pred 最大和最小的 k 个实例挑出来，放入 topk 中
         pos_index[:-topk] = groups[topk:] != groups[:-topk]
@@ -121,7 +127,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
         neg_index[topk:] = groups[:-topk] != groups[topk:]
 
         # 根据top-k的分类，制作迭代使用的数据集
-        trainset.make_train_data(list(sorted_idx[pos_index]), list(sorted_idx[neg_index]))
+        trainset.make_train_data(list(order[pos_index]), list(order[neg_index]))
 
         trainset.setmode(2)
 
@@ -147,7 +153,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
             optimizer.step()
 
         # calculate loss and error for epoch
-        train_loss /= len(train_loader)
+        train_loss /= len(train_loader.dataset)
         print('Epoch: [{}/{}], Loss: {:.4f}\n'.format(epoch, total_epochs, train_loss))
         fconv = open(os.path.join(output_path, 'convergence.csv'), 'a')
         fconv.write('{},loss,{}\n'.format(epoch, train_loss))
@@ -223,7 +229,7 @@ def train(trainset, valset, batch_size, workers, total_epochs, test_every, model
             if acc >= max_acc:
                 max_acc = acc
                 obj = {
-                    'epoch': epoch + 1,
+                    'epoch': epoch,
                     'state_dict': model.state_dict(),
                     'max_accuracy': max_acc,
                     'optimizer': optimizer.state_dict()
@@ -246,9 +252,9 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet = LystoDataset(filepath="LYSTO/training.h5", transform=trans,
-                            interval=args.interval, size=args.patch_size)
+                            interval=args.interval, size=args.patch_size, num_of_imgs=51)
     imageSet_val = LystoDataset(filepath="LYSTO/training.h5", transform=trans, train=False,
-                                interval=args.interval, size=args.patch_size)
+                                interval=args.interval, size=args.patch_size, num_of_imgs=51)
 
     train(imageSet, imageSet_val, batch_size=args.batch_size, workers=args.workers, total_epochs=args.epochs,
           test_every=args.test_every, model=model, criterion=criterion, optimizer=optimizer, topk=args.topk,

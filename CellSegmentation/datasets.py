@@ -68,7 +68,8 @@ class LystoDataset(Dataset):
     def setmode(self, mode):
         self.mode = mode
 
-    def make_train_data(self, pos_idxs, neg_idxs, shuffle=True): # 用于 mode 2，制作训练用数据集，包括正样本数据（ 1 ）和负样本数据（ 0 ）
+    def make_train_data(self, pos_idxs, neg_idxs, shuffle=True):
+        # 用于 mode 2，制作训练用数据集，包括正样本数据（ 1 ）和负样本数据（ 0 ）
         # 对于 topk，当 patch 对应的切片的 label 为 1 时标签为 1 ，否则为 0
         self.train_data = [(self.imageIDX[i], self.patches[i],
                             self.labels[self.imageIDX[i]]) for i in pos_idxs]
@@ -93,6 +94,9 @@ class LystoDataset(Dataset):
             imageIDX, patch_grid, label = self.train_data[idx]
             (x, y) = patch_grid
             patch = self.images[imageIDX][x:x + self.size - 1, y:y + self.size - 1]
+            if idx < 50:
+                from PIL import Image
+                Image.fromarray(patch).save('test/img{}_patch{}_label{}.png'.format(imageIDX, idx, label))
             if self.transform is not None:
                 patch = self.transform(patch)
 
