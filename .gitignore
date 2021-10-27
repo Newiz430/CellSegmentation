@@ -1,0 +1,11 @@
+/training_results/
+/output/
+/image/
+/data/
+/ihc/
+/runs/
+/.idea/
+*.pth
+*.ipynb
+.ipynb_checkpoints
+*.csv
