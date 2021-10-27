@@ -62,8 +62,8 @@ class LystoDataset(Dataset):
             self.images.append(img)
             self.labels.append(label)
             p = get_patches(img, self.interval, self.size)
-            self.patches_grid.extend(p) # 获取 32 * 32 的实例
-            self.patchIDX.extend([patchIDX] * len(p))
+            self.patches_grid.extend(p) # 获取 patch
+            self.patchIDX.extend([patchIDX] * len(p)) # 每个 patch 对应的 slide 标签
 
         assert len(self.labels) == len(self.images)
 
@@ -73,8 +73,8 @@ class LystoDataset(Dataset):
     def setmode(self, mode):
         self.mode = mode
 
-    def visualize_bboxes(self):
-        self.visualize = True
+    # def visualize_bboxes(self):
+    #     self.visualize = True
 
     def make_train_data(self, idxs):
         # 用于 mode 2，制作训练用数据集
@@ -225,7 +225,7 @@ class LystoTestset(Dataset):
             self.organs.append(organ)
             self.images.append(img)
             p = get_patches(img, self.interval, self.size)
-            self.patches_grid.extend(p) # 获取 32 * 32 的实例
+            self.patches_grid.extend(p) # 获取 patch
             self.patchIDX.extend([patchIDX] * len(p))
 
         self.transform = transform

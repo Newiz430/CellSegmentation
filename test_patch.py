@@ -17,7 +17,7 @@ import model.resnet as models
 
 now = int(time.time())
 
-parser = argparse.ArgumentParser(prog="test.py", description='Testing & Heatmap')
+parser = argparse.ArgumentParser(prog="test_patch.py", description='Testing & Heatmap')
 parser.add_argument('-m', '--model', type=str, default='checkpoint_10epochs.pth', help='path to pretrained model')
 parser.add_argument('-b', '--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
@@ -119,7 +119,7 @@ def predict_patch(loader, batch_size, epoch, total_epochs):
 
 
 def rank(testset, probs):
-    """寻找最大概率的 k 个 patch ，用于作图。
+    """寻找最大概率的 patch ，用于作图。
 
     :param testset:     测试集
     :param probs:       求得的概率
