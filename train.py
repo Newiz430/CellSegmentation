@@ -129,7 +129,6 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
             model.fc_patch = nn.Linear(model.fc_patch.in_features, 2).to(device)
             trainset.setmode(1)
             probs = predict_patch(train_loader_forward, batch_size, epoch, total_epochs)
-            # TODO: add pseudo mask generator here, or ...?
             sample(probs, patches_per_pos, topk_neg)
 
             # Training patch-mode only
@@ -402,7 +401,6 @@ def train_alternative(loader, batch_size, epoch, total_epochs, model, crit_cls, 
         patch_loss += patch_loss_i.item() * data[1].size(0)
         patch_num += data[1].size(0)
 
-        # # TODO: add pseudo mask generator here, or ...?
         # model.eval()
         # with torch.no_grad():
         #     output = model(data[1].to(device)) # ?

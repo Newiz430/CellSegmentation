@@ -71,8 +71,9 @@ def test(testset, batch_size, workers, model, output_path):
 
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
-    # 热图中各个 patch 的信息保存在 output_path/<timestamp>-pred.csv
-    fconv = open(os.path.join(output_path, '{}-pred.csv'.format(now)), 'w', newline="")
+    # 热图中各个 patch 的信息保存在 output_path/<timestamp>-pred-<patchsize>-<interval>-<threshold>.csv
+    fconv = open(os.path.join(output_path, '{}-pred-p{}-i{}-c{}.csv'.format(
+        now, args.patch_size, args.interval, args.threshold)), 'w', newline="")
     w = csv.writer(fconv)
     w.writerow(['patch_size', '{}'.format(testset.size)])
     w.writerow(['interval', '{}'.format(testset.interval)])
@@ -178,7 +179,11 @@ def heatmap(testset, patches, probs, groups, output_path):
     :param probs:           补丁对应的概率
     :param output_path:     图像存储路径
     """
+
     count = 0
+    # test_idx = len(testset)
+    test_idx = 20
+
     for i in range(1, len(groups) + 1):
         count += 1
 
@@ -194,8 +199,9 @@ def heatmap(testset, patches, probs, groups, output_path):
                      grid[1]: grid[1] + testset.size] = patch_mask
 
                 # 输出信息
-                print("prob_{}:{}".format(groups[i - 1], probs[j]))
-                fconv = open(os.path.join(output_path, '{}-pred.csv'.format(now)), 'a', newline="")
+                # print("prob_{}:{}".format(groups[i - 1], probs[j]))
+                fconv = open(os.path.join(output_path, '{}-pred-p{}-i{}-c{}.csv'.format(
+                    now, args.patch_size, args.interval, args.threshold)), 'a', newline="")
                 w = csv.writer(fconv)
                 w.writerow([groups[i - 1], '{}'.format(grid), probs[j]])
                 fconv.close()
@@ -206,6 +212,14 @@ def heatmap(testset, patches, probs, groups, output_path):
 
             count = 0
 
+            # 没有阳性 patch 的时候。。。
+            if i == len(groups) and groups[i - 1] != test_idx or groups[i - 1] != groups[i] - 1:
+                for j in range(groups[i - 1] + 1, test_idx if i == len(groups) else groups[i]):
+                    img = testset.images[j]
+                    mask = np.zeros((img.shape[0], img.shape[1]))
+                    mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
+                    img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
+                    Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(j)))
 
 if __name__ == "__main__":
     from dataset.dataset import LystoTestset
