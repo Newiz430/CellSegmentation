@@ -2,8 +2,11 @@ import warnings
 import os
 import numpy as np
 import argparse
-from tqdm import tqdm
 import time
+import cv2
+import csv
+from PIL import Image
+from tqdm import tqdm
 
 import torch
 import torch.optim as optim
@@ -22,22 +25,24 @@ warnings.filterwarnings("ignore")
 
 # Training settings
 parser = argparse.ArgumentParser(prog="train.py", description='Training')
-parser.add_argument('-e', '--epochs', type=int, default=10, metavar='N',
-                    help='number of epochs to train (default: 10)')
+parser.add_argument('-e', '--epochs', type=int, default=10, help='total number of epochs to train (default: 10)')
 parser.add_argument('-P', '--patch_only', action='store_true', help='if slide mode is disabled')
-parser.add_argument('-b', '--batch_size', type=int, default=32, help='mini-batch size of images (default: 32)')
+parser.add_argument('-b', '--patch_batch_size', type=int, default=32, help='mini-batch size of patches (default: 32)')
+parser.add_argument('-B', '--slide_batch_size', type=int, default=32, help='mini-batch size of slides (default: 32)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
-parser.add_argument('-t', '--test_every', default=1, type=int, help='test on val every (default: 1)')
-parser.add_argument('-p', '--patches_per_pos', default=1, type=int,
+parser.add_argument('-t', '--test_every', default=1, type=int, help='validate every (default: 1) epoch(s)')
+parser.add_argument('-k', '--patches_per_pos', default=1, type=int,
                     help='k tiles are from a single positive cell (default: 1, standard MIL)')
 parser.add_argument('-n', '--topk_neg', default=30, type=int,
                     help='top k tiles from a negative slide (default: 30, standard MIL)')
-parser.add_argument('--patch_size', type=int, default=32, help='size of each slide (default: 32)')
+parser.add_argument('-p', '--patch_size', type=int, default=32, help='size of each slide (default: 32)')
 parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
-parser.add_argument('-o', '--output', type=str, default='.', help='name of output file')
-parser.add_argument('-r', '--resume', action='store_true', help='continue training from a checkpoint file.pth')
+parser.add_argument('-o', '--output', type=str, default='.', metavar='OUTPUT/PATH',
+                    help='saving directory of output file')
+parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
+                    help='continue training from a checkpoint.pth')
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -47,7 +52,6 @@ else:
     torch.manual_seed(1)
 
 max_acc = 0
-resume = False
 verbose = True
 now = int(time.time())
 
@@ -55,9 +59,12 @@ trainset = None
 valset = None
 
 model = models.MILresnet18(pretrained=True)
+# 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
+model.fc_patch = nn.Linear(model.fc_patch.in_features, 2)
 
+last_epoch = 0
 if args.resume:
-    resume = True
+    last_epoch = torch.load(args.resume)['epoch']
     model.load_state_dict(torch.load(args.resume)['state_dict'])
 
 normalize = transforms.Normalize(
@@ -76,13 +83,14 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 device = torch.device("cuda:" + args.device if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-def train(batch_size, patch_only, workers, total_epochs, test_every, model,
+def train(batch_size, patch_only, workers, total_epochs, last_epoch, test_every, model,
           crit_cls, crit_reg, crit_seg, optimizer, patches_per_pos, topk_neg, output_path):
     """one training epoch = patch mode -> slide mode
 
     :param batch_size:      DataLoader 打包的小 batch 大小
     :param workers:         DataLoader 使用的进程数
     :param total_epochs:    迭代总次数
+    :param total_epochs:    上一次迭代的次数（当继续训练时）
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
     :param crit_cls:        分类器损失函数
@@ -94,7 +102,7 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
     :param output_path:     保存模型文件和训练数据结果的目录
     """
 
-    global device, resume, now
+    global device, now
 
     # shuffle 只能是 False
     # 暂定对 patch 的训练和对 slide 的训练所用的 batch_size 是一样的
@@ -120,13 +128,11 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
     # if resume:
     #     print('Resuming from the checkpoint (epochs: {}).'.format(model['epoch']))
 
+    start = time.time()
     with SummaryWriter() as writer:
-        for epoch in range(1, total_epochs + 1):
-            start = time.time()
+        for epoch in range(1 + last_epoch, total_epochs + 1):
 
             # Forwarding step
-            # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-            model.fc_patch = nn.Linear(model.fc_patch.in_features, 2).to(device)
             trainset.setmode(1)
             probs = predict_patch(train_loader_forward, batch_size, epoch, total_epochs)
             sample(probs, patches_per_pos, topk_neg)
@@ -135,11 +141,7 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
             if patch_only:
                 trainset.setmode(3)
                 loss = train_patch(train_loader_forward, batch_size, epoch, total_epochs, model, crit_cls, optimizer)
-
-                end = time.time()
-
                 print("patch loss: {:.4f}".format(loss))
-                print("Runtime: {}s".format((end - start) / 1000))
                 fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
                 fconv.write('{},{}\n'.format(epoch, loss))
                 fconv.close()
@@ -182,12 +184,8 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
                 delta = 0.1
                 loss = train_alternative(train_loader_backward, batch_size, epoch, total_epochs, model, crit_cls,
                                          crit_reg, crit_seg, optimizer, alpha, beta, gamma, delta)
-
-                end = time.time()
-
                 print("patch loss: {:.4f} | slide cls loss: {:.4f} | slide reg loss: {:.4f} | slide seg loss: {:.4f} | slide loss: {:.4f}"
                       .format(*loss))
-                print("Runtime: {}s".format((end - start) / 1000))
                 fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
                 fconv.write('{},{},{},{},{},{}\n'.format(epoch, *loss))
                 fconv.close()
@@ -205,6 +203,7 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
 
                     probs_p = predict_patch(val_loader, batch_size, epoch, total_epochs)
                     metrics_p = validation_patch(probs_p)
+                    # TODO: heatmap validation
                     print('patch error: {} | patch FPR: {} | patch FNR: {}'.format(*metrics_p))
 
                     writer.add_scalar('patch error rate', metrics_p[0], epoch)
@@ -234,6 +233,8 @@ def train(batch_size, patch_only, workers, total_epochs, test_every, model,
                     }
                     torch.save(obj, os.path.join(output_path, 'checkpoint_{}epochs.pth'.format(epoch)))
 
+    end = time.time()
+    print("\nTrained for {} epochs. Runtime: {.1f}s".format(total_epochs, end - start))
 
 def predict_patch(loader, batch_size, epoch, total_epochs):
     """前馈推导一次模型，获取实例分类概率。
@@ -284,7 +285,7 @@ def sample(probs, patches_per_pos, topk_neg):
 
     p, n = trainset.make_train_data(list(order[index]))
     if verbose:
-        print("Training data is sampled. \nPos samples: {} | Neg samples: {}".format(p, n))
+        print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
 def predict_slide(loader, batch_size, epoch, total_epochs):
@@ -342,7 +343,7 @@ def train_patch(loader, batch_size, epoch, total_epochs, model, criterion, optim
 
         output = model(data.to(device))
         optimizer.zero_grad()
-        loss = criterion(output, label.to(device))
+        loss = criterion(output, label.to(device)) # CrossEntropy 本身携带了 softmax()
 
         patch_num += data.size(0)
         train_loss += loss.item() * data.size(0)
@@ -468,18 +469,16 @@ def train_alternative(loader, batch_size, epoch, total_epochs, model, crit_cls, 
 def validation_patch(probs):
     """patch mode 的验证"""
 
-    # TODO: set thr automatically by calculating AUC
     thr = 0.88  # patch 的分类阈值，根据经验设定
     val_groups = np.array(valset.patchIDX)
 
-    order = np.lexsort((probs, val_groups))
+    order = np.lexsort((probs, val_groups)) # 对 patch 按预测概率排序
     val_groups = val_groups[order]
     val_probs = probs[order]
 
-    val_index = np.empty(len(val_probs), 'bool')
     val_index = np.array([prob > thr for prob in val_probs])
 
-    # 制作分类用的 label
+    # 制作分类用的 label：根据计数标签 = n，前 n 个 patch 为阳性
     labels = np.zeros(len(val_probs))
     for i in range(1, len(val_probs) + 1):
         if i == len(val_probs) or val_groups[i] != val_groups[i - 1]:
@@ -489,11 +488,62 @@ def validation_patch(probs):
     err, fpr, fnr = calc_err(val_index, labels)
     return err, fpr, fnr
 
+def heatmap(valset, patches, probs, groups, output_path):
+    """把预测得到的阳性细胞区域标在图上。
+
+    :param valset:          验证集
+    :param patches:         要标注的补丁
+    :param probs:           补丁对应的概率
+    :param output_path:     图像存储路径
+    """
+
+    count = 0
+    # test_idx = len(valset)
+    test_idx = 20
+
+    for i in range(1, len(groups) + 1):
+        count += 1
+
+        if i == len(groups) or groups[i] != groups[i - 1]:
+            img = valset.images[groups[i - 1]]
+            mask = np.zeros((img.shape[0], img.shape[1]))
+
+            for j in range(i - count, i):
+                patch_mask = np.full((valset.size, valset.size), probs[j])
+                grid = list(map(int, patches[j]))
+
+                mask[grid[0]: grid[0] + valset.size,
+                     grid[1]: grid[1] + valset.size] = patch_mask
+
+                # 输出信息
+                # print("prob_{}:{}".format(groups[i - 1], probs[j]))
+                fconv = open(os.path.join(output_path, '{}-pred.csv'.format(now)), 'a', newline="")
+                w = csv.writer(fconv)
+                w.writerow([groups[i - 1], '{}'.format(grid), probs[j]])
+                fconv.close()
+
+            mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
+            img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
+            Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "validate_{}.png".format(groups[i - 1])))
+
+            count = 0
+
+            # 没有阳性 patch 的时候。。。
+            if i == len(groups) and groups[i - 1] != test_idx or groups[i - 1] != groups[i] - 1:
+                for j in range(groups[i - 1] + 1, test_idx if i == len(groups) else groups[i]):
+                    img = valset.images[j]
+                    mask = np.zeros((img.shape[0], img.shape[1]))
+                    mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
+                    img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
+                    Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "validate_{}.png".format(j)))
+
 def validation_slide(probs, reg, seg):
     """slide mode 的验证"""
 
-    probs = np.round(probs)
-    err, fpr, fnr = calc_err(probs, np.sign(valset.labels))
+    # probs = np.round(probs)  # go soft?
+    # TODO: is it necessary to validate slide classification?
+    # err, fpr, fnr = calc_err(probs, np.sign(valset.labels))
+    err = fpr = fnr = 0
     mae = metrics.mean_absolute_error(valset.labels, reg)
     mse = metrics.mean_squared_error(valset.labels, reg)
     return err, fpr, fnr, mae, mse
@@ -514,17 +564,18 @@ if __name__ == "__main__":
     from dataset.dataset import LystoDataset
 
     print("Training settings: ")
-    print("Training Mode: {} | Epochs: {} | Validate every {} iteration(s) | Slide batch size: {} | Negative top-k: {}"
-          .format("patch" if args.patch_only else "patch + slide", args.epochs, args.test_every, args.batch_size, args.topk_neg))
+    print("Training Mode: {} | Epochs: {} | Validate every {} epoch(s) | Slide batch size: {} | Negative top-k: {}"
+          .format("patch" if args.patch_only else "patch + slide", args.epochs, args.test_every, args.slide_batch_size, args.topk_neg))
 
     print('Loading Dataset ...')
     trainset = LystoDataset(filepath="data/training.h5", transform=trans)
     valset = LystoDataset(filepath="data/training.h5", train=False, transform=trans)
 
-    train(batch_size=args.batch_size,
+    train(batch_size=args.slide_batch_size,
           patch_only=args.patch_only,
           workers=args.workers,
           total_epochs=args.epochs,
+          last_epoch=last_epoch,
           test_every=args.test_every,
           model=model,
           crit_cls=crit_cls,
@@ -533,4 +584,5 @@ if __name__ == "__main__":
           optimizer=optimizer,
           patches_per_pos=args.patches_per_pos,
           topk_neg=args.topk_neg,
-          output_path=args.output)
+          output_path=args.output
+          )

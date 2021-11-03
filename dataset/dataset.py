@@ -38,7 +38,7 @@ class LystoDataset(Dataset):
 
         self.train = train
         self.kfold = kfold
-        self.visualize = False
+        # self.visualize = False
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
@@ -112,8 +112,8 @@ class LystoDataset(Dataset):
             label_cls = 0 if self.labels[idx] == 0 else 1
             label_reg = self.labels[idx]
 
-            if self.visualize:
-                plt.imshow(slide)
+            # if self.visualize:
+            #     plt.imshow(slide)
 
             # Get patches
             patches = []
@@ -126,17 +126,18 @@ class LystoDataset(Dataset):
                     patch_grids.append((x, x + self.size - 1, y, y + self.size - 1))
                     patch_labels.append(label)
 
-                    if self.visualize:
-                        plt.gca().add_patch(
-                            plt.Rectangle((x, y), x + self.size - 1, y + self.size - 1,
-                                          fill=False, edgecolor='red' if label == 0 else 'deepskyblue', linewidth=1)
-                        )
+                    # if self.visualize:
+                    #     plt.gca().add_patch(
+                    #         plt.Rectangle((x, y), x + self.size - 1, y + self.size - 1,
+                    #                       fill=False, edgecolor='red' if label == 0 else 'deepskyblue', linewidth=1)
+                    #     )
 
-            # patch visualize testing
-            if self.visualize:
-                plt.savefig('test/img{}.png'.format(idx))
-                plt.close()
+            # # patch visualize testing
+            # if self.visualize:
+            #     plt.savefig('test/img{}.png'.format(idx))
+            #     plt.close()
 
+            # # 画边界框（有问题）
             #     slide_tensor = torch.from_numpy(slide.transpose((2, 0, 1))).contiguous()
             #     utils.draw_bounding_boxes(slide_tensor, torch.tensor(patch_grids),
             #                               labels=['neg' if lbl == 0 else 'pos' for lbl in patch_labels],

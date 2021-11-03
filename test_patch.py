@@ -38,8 +38,8 @@ else:
     torch.manual_seed(1)
 
 print("Testing settings: ")
-print("Model: {} | Patches batch size: {} | Interval: {} | Threshold: {} | Output directory: {}"
-      .format(args.model, args.batch_size, args.interval, args.threshold, args.output))
+print("Model: {} | Patches batch size: {} | Patch size: {} | Interval: {} | Threshold: {} | Output directory: {}"
+      .format(args.model, args.batch_size, args.patch_size, args.interval, args.threshold, args.output))
 if not os.path.exists(args.output):
     os.mkdir(args.output)
 
