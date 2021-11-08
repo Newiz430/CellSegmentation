@@ -11,7 +11,6 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
-
 class BasicBlock(nn.Module):
     expansion = 1
 
@@ -80,7 +79,9 @@ class Bottleneck(nn.Module):
 
 class MILResNet(nn.Module):
 
-    def __init__(self, block, layers, num_classes=1000):
+    def __init__(self, encoder, block, layers, num_classes=1000, expansion=1):
+        self.encoder_name = encoder
+
         self.inplanes = 64
         super(MILResNet, self).__init__()
         # encoder
@@ -93,12 +94,12 @@ class MILResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         # encoder 以下部分
-        self.avgpool_patch = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc_patch = nn.Linear(512 * block.expansion, num_classes)
-        self.avgpool_slide = nn.AdaptiveAvgPool2d((5, 5))
-        self.fc_slide_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
+        self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc_tile = nn.Linear(512 * block.expansion, num_classes)
+        self.avgpool_image = nn.AdaptiveAvgPool2d((5, 5))
+        self.fc_image_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
         # 回归层参考了 AlexNet 的结构
-        self.fc_slide_reg = nn.Sequential(
+        self.fc_image_reg = nn.Sequential(
             nn.Dropout(),
             nn.Linear(512 * 5 * 5 * block.expansion, 512),
             nn.ReLU(inplace=True),
@@ -108,23 +109,23 @@ class MILResNet(nn.Module):
             nn.Linear(128, 1),
             nn.ReLU(inplace=True)
         )
-        self.image_channels = 32  # slide mode 中金字塔卷积的输出通道数
+        self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
 
         # 金字塔层级
         self.pyramid_10 = nn.Sequential(
-            nn.Conv2d(512, 128, kernel_size=1, stride=1),
+            nn.Conv2d(512 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
         )
         self.pyramid_19 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1, stride=1),
+            nn.Conv2d(256 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
         )
         self.pyramid_38 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=1, stride=1),
+            nn.Conv2d(128 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
@@ -141,6 +142,7 @@ class MILResNet(nn.Module):
             nn.BatchNorm2d(self.image_channels),
             nn.ReLU(inplace=True)
         )
+        self.seg_out_conv = nn.Conv2d(self.image_channels, 2, kernel_size=1)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -167,33 +169,37 @@ class MILResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor): # x_patch: [nk, 3, 32, 32] x_slide: [n, 3, 299, 299]
+    def forward(self, x: torch.Tensor): # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
-        x = self.conv1(x) # x_patch: [nk, 64, 16, 16] x_slide: [n, 64, 150, 150]
+        x = self.conv1(x) # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x) # x_patch: [nk, 64, 8, 8] x_slide: [n, 64, 75, 75]
+        x = self.maxpool(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
 
-        x1 = self.layer1(x) # x_patch: [nk, 64, 8, 8] x_slide: [n, 64, 75, 75]
-        x2 = self.layer2(x1) # x_patch: [nk, 128, 4, 4] x_slide: [n, 128, 38, 38]
-        x3 = self.layer3(x2) # x_patch: [nk, 256, 2, 2] x_slide: [n, 256, 19, 19]
-        x4 = self.layer4(x3) # x_patch: [nk, 512, 1, 1] x_slide: [n, 512, 10, 10]
+        x1 = self.layer1(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
+        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 128, 38, 38]
+        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 256, 19, 19]
+        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 512, 10, 10]
 
-        if self.mode == "patch":
+        if self.mode == "tile":
 
-            x = self.avgpool_patch(x4)  # x: [nk, 512, 1, 1]
-            x = self.fc_patch(torch.flatten(x, 1))  # x: [nk, 512]
+            x = self.avgpool_tile(x4)  # x: [nk, 512, 1, 1]
+            x = self.fc_tile(torch.flatten(x, 1))  # x: [nk, 512]
 
             return x
 
-        elif self.mode == "slide":
+        elif self.mode == "image":
 
-            # slide_cls & slide_reg
-            out = self.avgpool_slide(x4)  # [n, 512, 5, 5]
-            out_cls = self.fc_slide_cls(torch.flatten(out, 1))  # [n, 2]
-            out_reg = self.fc_slide_reg(torch.flatten(out, 1))  # [n, 1]
+            # image_cls & image_reg
+            out = self.avgpool_image(x4)  # [n, 512, 5, 5]
+            out_cls = self.fc_image_cls(torch.flatten(out, 1))  # [n, 2]
+            out_reg = self.fc_image_reg(torch.flatten(out, 1))  # [n, 1]
 
-            # slide_seg
+            return out_cls, out_reg
+
+        elif self.mode == "segment":
+
+            # image_seg
             out_x4 = self.pyramid_10(x4)  # out_x4: [n, 32, 10, 10]
             out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
             out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
@@ -203,8 +209,9 @@ class MILResNet(nn.Module):
             out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear", align_corners=True)
             out_seg = torch.cat([out_seg, out_x2], dim=1)
             out_seg = self.upsample_conv2(out_seg)  # [n, 32, 38, 38]
+            out_seg = self.seg_out_conv(out_seg)    # [n, 2, 38, 38]
 
-            return out_cls, out_reg, out_seg, out_x2
+            return out_seg
 
         else:
             raise Exception("Something wrong in setmode.")
@@ -218,18 +225,35 @@ def MILresnet18(pretrained=False, **kwargs):
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    model = MILResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+    model = MILResNet('resnet18', BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
     return model
 
 
-def resnet34(pretrained=False, **kwargs):
+def MILresnet34(pretrained=False, **kwargs):
     """Constructs a ResNet-34 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    model = MILResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
+    model = MILResNet('resnet34', BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet34']), strict=False)
     return model
+
+
+def MILresnet50(pretrained=False, **kwargs):
+    """Constructs a ResNet-50 model.
+    Args:
+        pretrained (bool): If True, returns a model pre-trained on ImageNet
+    """
+    model = MILResNet('resnet50', Bottleneck, [3, 4, 6, 3], expansion=4, **kwargs)
+    if pretrained:
+        model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)
+    return model
+
+encoders = {
+    'resnet18': MILresnet18(pretrained=True),
+    'resnet34': MILresnet34(pretrained=True),
+    'resnet50': MILresnet50(pretrained=True)
+}
