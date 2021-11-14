@@ -20,6 +20,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import save_image
 
+from dataset.dataset import LystoDataset
 import model.resnet as models
 from utils.collate import default_collate
 
@@ -36,13 +37,15 @@ parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='mini
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
-parser.add_argument('-m', '--mini_epoch_size', default=1000, type=int, help='number of iterations per mini-epoch (default: 1000)')
+parser.add_argument('-m', '--mini_epochs', default=5, type=int, help='number of mini-epochs per epoch (default: 5)')
 parser.add_argument('--test_every', default=1, type=int, help='validate every (default: 1) epoch(s)')
 parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
                     help='k tiles are from a single positive cell (default: 1, standard MIL)')
 parser.add_argument('-n', '--topk_neg', default=30, type=int,
                     help='top k tiles from a negative image (default: 30, standard MIL)')
 parser.add_argument('-t', '--tile_size', type=int, default=32, help='size of a certain tile (default: 32)')
+parser.add_argument('-c', '--threshold', type=float, default=0.88,
+                    help='minimal prob for tiles to show in generating segmentation masks (default: 0.88)')
 parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -59,13 +62,7 @@ if torch.cuda.is_available():
 else:
     torch.manual_seed(1)
 
-max_acc = 0
-verbose = True
-now = int(time.time())
-
-trainset = None
-valset = None
-
+# Model setup
 model = models.encoders[args.encoder]
 # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
 model.fc_tile = nn.Linear(model.fc_tile.in_features, 2)
@@ -74,18 +71,6 @@ last_epoch = 0
 if args.resume:
     last_epoch = torch.load(args.resume)['epoch']
     model.load_state_dict(torch.load(args.resume)['state_dict'])
-
-normalize = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225]
-)
-trans = transforms.Compose([transforms.ToTensor(), normalize])
-# trans = transforms.ToTensor()
-
-crit_cls = nn.CrossEntropyLoss()
-crit_reg = nn.MSELoss()
-crit_seg = None # TODO
-optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
 if dist.is_nccl_available() and args.distributed:
     print('\nNCCL is available. Setup distributed parallel training with {} devices...\n'
@@ -99,15 +84,56 @@ else:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu", args.device)
     model.to(device)
 
-def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_size, test_every, model,
-          crit_cls, crit_reg, crit_seg, optimizer, tiles_per_pos, topk_neg, output_path):
+max_acc = 0
+verbose = True
+now = int(time.time())
+
+crit_cls = nn.CrossEntropyLoss()
+crit_reg = nn.MSELoss()
+crit_seg = None  # TODO: CE?
+optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+threshold = 0.88  # tile 的分类阈值，根据经验设定
+
+# data setup
+normalize = transforms.Normalize(
+    mean=[0.485, 0.456, 0.406],
+    std=[0.229, 0.224, 0.225]
+)
+trans = transforms.Compose([transforms.ToTensor(), normalize])
+# trans = transforms.ToTensor()
+
+print("Training settings: ")
+print("Training Mode: {} | Device: {} | Encoder: {} | {} epochs in total | Validate every {} epoch(s) | Image batch size: {} | Negative top-k: {}"
+      .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
+              args.encoder, args.epochs, args.test_every, args.image_batch_size, args.topk_neg))
+
+print('Loading Dataset ...')
+trainset = LystoDataset(filepath="data/training.h5", transform=trans)
+valset = LystoDataset(filepath="data/training.h5", train=False, transform=trans)
+
+# shuffle 只能是 False
+# 暂定对 tile 的训练和对 image 的训练所用的 batch_size 是一样的
+collate_fn = default_collate
+# TODO: how can I split the training step for distributed parallel training?
+train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
+val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
+train_loader_forward = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+                                  num_workers=args.workers, sampler=train_sampler, pin_memory=True)
+train_loader_backward = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True, collate_fn=collate_fn)
+val_loader = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+                        sampler=val_sampler, pin_memory=True)
+
+
+def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_every, model,
+          crit_cls, crit_reg, crit_seg, optimizer, threshold, tiles_per_pos, topk_neg, output_path):
     """one training epoch = tile mode -> image mode
 
     :param batch_size:      DataLoader 打包的小 batch 大小
     :param workers:         DataLoader 使用的进程数
     :param total_epochs:    迭代总次数
     :param last_epoch:      上一次迭代的次数（当继续训练时）
-    :param mini_epoch_size: 一个 mini_epoch 包含迭代的次数
+    :param mini_epochs:     mini_epoch 的数目
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
     :param crit_cls:        分类器损失函数
@@ -120,19 +146,6 @@ def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_s
     """
 
     global device, now
-
-    # shuffle 只能是 False
-    # 暂定对 tile 的训练和对 image 的训练所用的 batch_size 是一样的
-    collate_fn = default_collate
-    # TODO: how can I split the training step for distributed parallel training?
-    train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
-    val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-    train_loader_forward = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers,
-                                      sampler=train_sampler, pin_memory=True)
-    train_loader_backward = DataLoader(trainset, batch_size=batch_size, shuffle=False, num_workers=workers,
-                                       sampler=train_sampler, pin_memory=True, collate_fn=collate_fn)
-    val_loader = DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=workers, sampler=val_sampler,
-                            pin_memory=True)
 
     # open output file
     fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'w')
@@ -203,8 +216,8 @@ def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_s
                 beta = 0.1
                 gamma = 0.9
                 delta = 0.1
-                loss = train_alternative(train_loader_backward, batch_size, epoch, total_epochs, mini_epoch_size, model, crit_cls,
-                                         crit_reg, crit_seg, optimizer, beta, gamma, delta)
+                loss = train_alternative(train_loader_backward, batch_size, epoch, total_epochs, mini_epochs, model, crit_cls,
+                                         crit_reg, crit_seg, optimizer, threshold, alpha, beta, gamma, delta)
 
                 print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | image seg loss: {:.4f} | image loss: {:.4f}"
                       .format(*loss))
@@ -225,7 +238,6 @@ def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_s
 
                     probs_p = inference_tiles(val_loader, batch_size, epoch, total_epochs)
                     metrics_p = validation_tile(probs_p)
-                    # TODO: heatmap validation
                     print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_p))
 
                     writer.add_scalar('tile error rate', metrics_p[0], epoch)
@@ -234,7 +246,7 @@ def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_s
 
                     # image validating
                     valset.setmode(4)
-                    probs_s, reg, seg = predict_image(val_loader, batch_size, epoch, total_epochs)
+                    probs_s, reg, seg = inference_image(val_loader, batch_size, epoch, total_epochs)
                     metrics_s = validation_image(probs_s, reg, seg)
                     print('image error: {} | image FPR: {} | image FNR: {}\nMAE: {} | MSE: {}\n'.format(*metrics_s))
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
@@ -258,6 +270,7 @@ def train(batch_size, tile_only, workers, total_epochs, last_epoch, mini_epoch_s
 
     end = int(time.time())
     print("\nTrained for {} epochs. Runtime: {}s".format(total_epochs, end - start))
+
 
 def inference_tiles(loader, batch_size, epoch, total_epochs):
     """前馈推导一次模型，获取实例分类概率。
@@ -311,7 +324,7 @@ def sample(probs, tiles_per_pos, topk_neg):
         print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def predict_image(loader, batch_size, epoch, total_epochs):
+def inference_image(loader, batch_size, epoch, total_epochs):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。
 
     :param loader:          训练集的迭代器
@@ -328,11 +341,11 @@ def predict_image(loader, batch_size, epoch, total_epochs):
     nums = torch.tensor(())
     feats = torch.tensor(())
     with torch.no_grad():
-        image_bar = tqdm(loader, total=len(loader.dataset) // batch_size + 1)
+        image_bar = tqdm(loader, total=len(loader) + 1)
         for i, (data, label_cls, label_num, _) in enumerate(image_bar):
             image_bar.set_postfix(step="image forwarding",
                                   epoch="[{}/{}]".format(epoch, total_epochs),
-                                  batch="[{}/{}]".format(i + 1, len(loader.dataset) // batch_size + 1))
+                                  batch="[{}/{}]".format(i + 1, len(loader) + 1))
             output = model(data.to(device))
             output_cls = F.softmax(output[0], dim=1)
             probs = torch.cat((probs, output_cls.detach()[:, 1].clone().cpu()), dim=0)
@@ -362,7 +375,7 @@ def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimi
     for i, (data, label) in enumerate(train_bar):
         train_bar.set_postfix(step="tile training",
                               epoch="[{}/{}]".format(epoch, total_epochs),
-                              batch="[{}/{}]".format(i + 1, len(loader.dataset) // batch_size + 1))
+                              batch="[{}/{}]".format(i + 1, len(loader) + 1))
 
         output = model(data.to(device))
         optimizer.zero_grad()
@@ -377,15 +390,15 @@ def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimi
     return train_loss
 
 
-def train_alternative(loader, batch_size, epoch, total_epochs, mini_epoch_size, model, crit_cls, crit_reg, crit_seg, optimizer,
-                      alpha, beta, gamma, delta):
+def train_alternative(loader, batch_size, epoch, total_epochs, mini_epochs, model, crit_cls, crit_reg, crit_seg, optimizer,
+                      threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
     :param loader:          训练集的迭代器
     :param batch_size:      DataLoader 打包的小 batch 大小
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
-    :param mini_epoch_size: 一个 mini_epoch 包含迭代的次数
+    :param mini_epochs:     一个 mini_epoch 包含迭代的次数
     :param model:           网络模型
     :param crit_cls:        分类器损失函数
     :param crit_reg:        回归损失函数
@@ -412,11 +425,13 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epoch_size, 
                               epoch="[{}/{}]".format(epoch, total_epochs),
                               batch="[{}/{}]".format(i + 1, len(loader) + 1))
 
-        # tile training
+        # pt.1: tile training
         model.setmode("tile")
         model.train()
+
         # print("images pack size:", data[0].size())
         # print("tiles pack size:", data[1].size())
+
         output = model(data[1].to(device))
         optimizer.zero_grad()
 
@@ -433,7 +448,7 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epoch_size, 
         #     output = F.softmax(output, dim=1)
         #     probs = output.detach()[:, 1].clone().cpu().numpy() # 当前 batch 中的图像前馈得到的 tile 概率
 
-        # image training
+        # pt.2: image training
         model.setmode("image")
         model.train()
         output = model(data[0].to(device))
@@ -458,12 +473,9 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epoch_size, 
         # print("image data size:", data[0].size(0))
         # print("tile data size:", data[1].size(0))
 
-        if (i + 1) % mini_epoch_size == 0:
-            # TODO: save masks after n iterations
-            pass
-
-        # TODO: read masks for seg head training
-
+        if (i + 1) % ((len(loader) + 1) // mini_epochs) == 0:
+            train_seg(train_loader_forward, batch_size, model, crit_seg, optimizer, threshold, save_masks=True)
+            # TODO: save masks of all data after n iterations
 
 
     # print("Total tiles:", tile_num)
@@ -477,39 +489,50 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epoch_size, 
     image_seg_loss = 0.
     return tile_loss, image_cls_loss, image_reg_loss, image_seg_loss, image_loss
 
-# def validation_tile(probs):
-#     """tile mode 的验证"""
-#
-#     val_groups = np.array(valset.tileIDX)
-#
-#     max_prob = np.empty(len(valset.labels))  # 模型预测的实例最大概率列表，每张切片取最大概率的 tile
-#     max_prob[:] = np.nan
-#     order = np.lexsort((probs, val_groups))
-#     # 排序
-#     val_groups = val_groups[order]
-#     val_probs = probs[order]
-#     # 取最大
-#     val_index = np.empty(len(val_groups), 'bool')
-#     val_index[-1] = True
-#     val_index[:-1] = val_groups[1:] != val_groups[:-1]
-#     max_prob[val_groups[val_index]] = val_probs[val_index]
-#
-#     # 计算错误率、FPR、FNR
-#     probs = np.round(max_prob)  # 每张切片由最大概率的 tile 得到的标签
-#     err, fpr, fnr = calc_err(probs, np.sign(valset.labels))
-#     return err, fpr, fnr
+
+def train_seg(loader, batch_size, model, crit_seg, optimizer, threshold, save_masks):
+
+    # pt.3 segment training
+    model.setmode("segment")
+
+    probs = torch.Tensor(len(loader.dataset))
+    with torch.no_grad():
+        for i, input in enumerate(loader):
+            model.setmode("tile")
+            model.eval()
+            output = model(input[0].to(device))
+            output = F.softmax(output, dim=1)
+            probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
+
+    groups = np.array(trainset.tileIDX)
+    tiles = np.array(trainset.tiles_grid)
+
+    order = np.lexsort((probs, groups))
+    groups = groups[order]
+    probs = probs[order]
+    tiles = tiles[order]
+
+    index = [prob > threshold for prob in probs]
+
+    pseudo_masks = generate_masks(trainset, tiles[index], groups[index], save_masks)
+
+    # TODO: create a new dataset for masks
+
+    model.train()
+    # TODO: load data for segmentation head training
+
 
 def validation_tile(probs):
     """tile mode 的验证"""
 
-    thr = 0.88  # tile 的分类阈值，根据经验设定
+    global threshold
     val_groups = np.array(valset.tileIDX)
 
     order = np.lexsort((probs, val_groups)) # 对 tile 按预测概率排序
     val_groups = val_groups[order]
     val_probs = probs[order]
 
-    val_index = np.array([prob > thr for prob in val_probs])
+    val_index = np.array([prob > threshold for prob in val_probs])
 
     # 制作分类用的 label：根据计数标签 = n，前 n 个 tile 为阳性
     labels = np.zeros(len(val_probs))
@@ -521,54 +544,60 @@ def validation_tile(probs):
     err, fpr, fnr = calc_err(val_index, labels)
     return err, fpr, fnr
 
-def heatmap(valset, tiles, probs, groups, output_path):
-    """把预测得到的阳性细胞区域标在图上。
 
-    :param valset:          验证集
-    :param tiles:         要标注的补丁
+def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseudomask"):
+    """把预测得到的阳性细胞区域做成二值掩码。
+
+    :param dataset:         训练数据集
+    :param tiles:           要标注的补丁
     :param probs:           补丁对应的概率
     :param output_path:     图像存储路径
     """
 
     count = 0
-    # test_idx = len(valset)
-    test_idx = 20
+    idx = len(dataset)
+    pseudo_masks = []
 
     for i in range(1, len(groups) + 1):
         count += 1
 
         if i == len(groups) or groups[i] != groups[i - 1]:
-            img = valset.images[groups[i - 1]]
-            mask = np.zeros((img.shape[0], img.shape[1]))
+
+            mask = np.zeros(dataset.image_size)
 
             for j in range(i - count, i):
-                tile_mask = np.full((valset.size, valset.size), probs[j])
+                tile_mask = np.ones((dataset.tile_size, dataset.tile_size))
                 grid = list(map(int, tiles[j]))
 
-                mask[grid[0]: grid[0] + valset.size,
-                     grid[1]: grid[1] + valset.size] = tile_mask
+                mask[grid[0]: grid[0] + dataset.tile_size,
+                     grid[1]: grid[1] + dataset.tile_size] = tile_mask
 
-                # 输出信息
-                # print("prob_{}:{}".format(groups[i - 1], probs[j]))
-                fconv = open(os.path.join(output_path, '{}-pred.csv'.format(now)), 'a', newline="")
-                w = csv.writer(fconv)
-                w.writerow([groups[i - 1], '{}'.format(grid), probs[j]])
-                fconv.close()
-
-            mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
-            img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-            Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "validate_{}.png".format(groups[i - 1])))
+            pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
+            if save_masks:
+                Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
+                    os.path.join(output_path, "rgb/{}.png".format(groups[i - 1])),
+                    optimize=True)
+                Image.fromarray(np.uint8(mask * 255)).save(
+                    os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
+                    optimize=True)
 
             count = 0
 
             # 没有阳性 tile 的时候。。。
-            if i == len(groups) and groups[i - 1] != test_idx or groups[i - 1] != groups[i] - 1:
-                for j in range(groups[i - 1] + 1, test_idx if i == len(groups) else groups[i]):
-                    img = valset.images[j]
-                    mask = np.zeros((img.shape[0], img.shape[1]))
-                    mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
-                    img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-                    Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "validate_{}.png".format(j)))
+            if i == len(groups) and groups[i - 1] != idx or groups[i - 1] != groups[i] - 1:
+                for j in range(groups[i - 1] + 1, idx if i == len(groups) else groups[i]):
+                    mask = np.zeros(dataset.image_size)
+
+                    pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
+                    if save_masks:
+                        Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
+                            os.path.join(output_path, "rgb/{}.png".format(groups[i - 1])),
+                            optimize=True)
+                        Image.fromarray(np.uint8(mask * 255)).save(
+                            os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
+                            optimize=True)
+
+    return pseudo_masks
 
 def validation_image(probs, reg, seg):
     """image mode 的验证"""
@@ -580,6 +609,7 @@ def validation_image(probs, reg, seg):
     mae = metrics.mean_absolute_error(valset.labels, reg)
     mse = metrics.mean_squared_error(valset.labels, reg)
     return err, fpr, fnr, mae, mse
+
 
 def calc_err(pred, real):
     """计算分类任务的错误率、假阳性率、假阴性率"""
@@ -594,29 +624,19 @@ def calc_err(pred, real):
 
 
 if __name__ == "__main__":
-    from dataset.dataset import LystoDataset
-
-    print("Training settings: ")
-    print("Training Mode: {} | Device: {} | Encoder: {} | {} epochs in total | Validate every {} epoch(s) | Image batch size: {} | Negative top-k: {}"
-          .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
-                  args.encoder, args.epochs, args.test_every, args.image_batch_size, args.topk_neg))
-
-    print('Loading Dataset ...')
-    trainset = LystoDataset(filepath="data/training.h5", transform=trans)
-    valset = LystoDataset(filepath="data/training.h5", train=False, transform=trans)
 
     train(batch_size=args.image_batch_size,
           tile_only=args.tile_only,
-          workers=args.workers,
           total_epochs=args.epochs,
           last_epoch=last_epoch,
-          mini_epoch_size=args.mini_epoch_size,
+          mini_epochs=args.mini_epochs,
           test_every=args.test_every,
           model=model,
           crit_cls=crit_cls,
           crit_reg=crit_reg,
           crit_seg=crit_seg,
           optimizer=optimizer,
+          threshold=threshold,
           tiles_per_pos=args.tiles_per_pos,
           topk_neg=args.topk_neg,
           output_path=args.output

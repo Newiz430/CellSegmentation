@@ -116,33 +116,48 @@ class MILResNet(nn.Module):
             nn.Conv2d(512 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
         )
         self.pyramid_19 = nn.Sequential(
             nn.Conv2d(256 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
         )
         self.pyramid_38 = nn.Sequential(
             nn.Conv2d(128 * expansion, 128, kernel_size=1, stride=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1),
+            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
         )
 
         # 图像上采样卷积层
-        self.upsample_conv1 = nn.Sequential(
-            nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
-            nn.BatchNorm2d(self.image_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.upsample_conv2 = nn.Sequential(
-            nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
-            nn.BatchNorm2d(self.image_channels),
-            nn.ReLU(inplace=True)
-        )
-        self.seg_out_conv = nn.Conv2d(self.image_channels, 2, kernel_size=1)
+        self.upsample1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.upsample2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+        self.upsample3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+
+        self.upsample_conv1 = self.upsample_conv(2 * self.image_channels, self.image_channels)
+        self.upsample_conv2 = self.upsample_conv(2 * self.image_channels, self.image_channels)
+
+        # self.upsample_conv1 = nn.Sequential(
+        #     nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+        #     nn.BatchNorm2d(self.image_channels),
+        #     nn.ReLU(inplace=True)
+        # )
+        # self.upsample_conv2 = nn.Sequential(
+        #     nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+        #     nn.BatchNorm2d(self.image_channels),
+        #     nn.ReLU(inplace=True)
+        # )
+        # self.upsample_conv3 = nn.Sequential(
+        #     nn.Conv2d(2 * self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+        #     nn.BatchNorm2d(self.image_channels),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(self.image_channels, self.image_channels, kernel_size=3, padding=1, stride=1),
+        #     nn.BatchNorm2d(self.image_channels),
+        #     nn.ReLU(inplace=True)
+        # )
+        self.seg_out_conv = nn.Conv2d(self.image_channels, 1, kernel_size=1)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -168,6 +183,19 @@ class MILResNet(nn.Module):
             layers.append(block(self.inplanes, planes))
 
         return nn.Sequential(*layers)
+
+    @staticmethod
+    def upsample_conv(in_channels, out_channels, mid_channels=None):
+        if not mid_channels:
+            mid_channels = out_channels
+        return nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
 
     def forward(self, x: torch.Tensor): # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
@@ -203,13 +231,19 @@ class MILResNet(nn.Module):
             out_x4 = self.pyramid_10(x4)  # out_x4: [n, 32, 10, 10]
             out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
             out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
-            out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear", align_corners=True)
-            out_seg = torch.cat([out_seg, out_x3], dim=1)  # 连接两层
-            out_seg = self.upsample_conv1(out_seg)  # 融合 x4 和 x3 的特征
-            out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear", align_corners=True)
-            out_seg = torch.cat([out_seg, out_x2], dim=1)
+
+            # out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear", align_corners=True)
+            out_seg = self.upsample1(out_x4.clone())
+            out_seg = torch.cat([out_seg, out_x3], dim=1)  # 连接两层，输出 [n, 64, 19, 19]
+            out_seg = self.upsample_conv1(out_seg)  # 融合 x4 和 x3 的特征，输出 [n, 32, 19, 19]
+            # out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear", align_corners=True)
+            out_seg = self.upsample2(out_seg)
+            out_seg = torch.cat([out_seg, out_x2], dim=1)  # 连接两层，输出 [n, 64, 38, 38]
             out_seg = self.upsample_conv2(out_seg)  # [n, 32, 38, 38]
-            out_seg = self.seg_out_conv(out_seg)    # [n, 2, 38, 38]
+
+            out_seg = self.upsample3(out_seg)  # [n, 32, 75, 75]
+
+            out_seg = self.seg_out_conv(out_seg)  # [n, 1, 75, 75]
 
             return out_seg
 

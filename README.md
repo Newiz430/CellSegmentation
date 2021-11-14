@@ -1,8 +1,11 @@
 ## Semantic Segmentation of Lymphocytes by Multiple Instance Learning
 
-This is a project for **the Lymphocyte Assessment Hackathon** ([LYSTO](https://lysto.grand-challenge.org/)) Challenge.
+<a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-v1.9.0-red.svg?logo=PyTorch&style=for-the-badge" /></a>
 
-### Network
+### Dataset
+Visit **the Lymphocyte Assessment Hackathon** ([LYSTO](https://lysto.grand-challenge.org/)) Challenge to get data.
+
+### Network frame
 ![](network_frame.png)
 
 ... under construction ... stay tuned. 

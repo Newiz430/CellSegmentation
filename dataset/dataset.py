@@ -16,7 +16,7 @@ class LystoDataset(Dataset):
                  train=True,
                  kfold=10,
                  interval=20,
-                 size=32,
+                 tile_size=32,
                  num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
@@ -24,7 +24,7 @@ class LystoDataset(Dataset):
         :param train:       训练集 / 验证集，默认为训练集
         :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
         :param interval:    选取 tile 的间隔，默认值为 20px
-        :param size:        一个 tile 的边长，默认值为 32px
+        :param tile_size:   一个 tile 的边长，默认值为 32px
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
@@ -45,7 +45,7 @@ class LystoDataset(Dataset):
         self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
         self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
-        self.size = size
+        self.tile_size = tile_size
 
         tileIDX = -1
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
@@ -61,12 +61,13 @@ class LystoDataset(Dataset):
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
-            t = get_tiles(img, self.interval, self.size)
+            t = get_tiles(img, self.interval, self.tile_size)
             self.tiles_grid.extend(t) # 获取 tiles
             self.tileIDX.extend([tileIDX] * len(t)) # 每个 tile 对应的 image 标签
 
         assert len(self.labels) == len(self.images)
 
+        self.image_size = self.images[0].shape
         self.mode = None
         self.transform = transform
 
@@ -98,7 +99,7 @@ class LystoDataset(Dataset):
         # top-k 选取模式 (tile mode)
         if self.mode == 1:
             (x, y) = self.tiles_grid[idx]
-            tile = self.images[self.tileIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
+            tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
             if self.transform:
                 tile = self.transform(tile)
 
@@ -121,14 +122,14 @@ class LystoDataset(Dataset):
             tile_labels = []
             for tileIDX, (x, y), label in self.train_data:
                 if tileIDX == idx:
-                    tile = self.images[tileIDX][x:x + self.size - 1, y:y + self.size - 1]
+                    tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
                     tiles.append(tile)
-                    tile_grids.append((x, x + self.size - 1, y, y + self.size - 1))
+                    tile_grids.append((x, x + self.tile_size, y, y + self.tile_size))
                     tile_labels.append(label)
 
                     # if self.visualize:
                     #     plt.gca().add_patch(
-                    #         plt.Rectangle((x, y), x + self.size - 1, y + self.size - 1,
+                    #         plt.Rectangle((x, y), x + self.size, y + self.size,
                     #                       fill=False, edgecolor='red' if label == 0 else 'deepskyblue', linewidth=1)
                     #     )
 
@@ -155,7 +156,7 @@ class LystoDataset(Dataset):
         # tile-only training mode
         elif self.mode == 3:
             tileIDX, (x, y), label = self.train_data[idx]
-            tile = self.images[tileIDX][x:x + self.size - 1, y:y + self.size - 1]
+            tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
             if self.transform:
                 tile = self.transform(tile)
             return tile, label
@@ -193,13 +194,13 @@ class LystoTestset(Dataset):
     def __init__(self, filepath=None,
                  transform=None,
                  interval=10,
-                 size=32,
+                 tile_size=32,
                  num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
         :param transform:   数据预处理方式
         :param interval:    在切片上选取 tile 的间隔，默认值为 10px
-        :param size:        一个 tile 的边长，默认值为 32px
+        :param tile_size:   一个 tile 的边长，默认值为 32px
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
@@ -213,7 +214,7 @@ class LystoTestset(Dataset):
         self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
         self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
-        self.size = size
+        self.size = tile_size
 
         tileIDX = -1
         for i, (organ, img) in enumerate(zip(f['organ'], f['x'])):
@@ -229,6 +230,7 @@ class LystoTestset(Dataset):
             self.tiles_grid.extend(t) # 获取 tile
             self.tileIDX.extend([tileIDX] * len(t))
 
+        self.image_size = self.images[0].shape
         self.transform = transform
 
     def __getitem__(self, idx):
@@ -236,7 +238,7 @@ class LystoTestset(Dataset):
         # organ = self.organs[idx]
 
         (x, y) = self.tiles_grid[idx]
-        tile = self.images[self.tileIDX[idx]][x:x + self.size - 1, y:y + self.size - 1]
+        tile = self.images[self.tileIDX[idx]][x:x + self.size, y:y + self.size]
         if self.transform is not None:
             tile = self.transform(tile)
 
@@ -265,8 +267,8 @@ def get_tiles(image, interval=10, size=32):
 if __name__ == '__main__':
 
     batch_size = 2
-    imageSet = LystoDataset(filepath="data/training.h5", interval=150, size=32, num_of_imgs=51)
-    imageSet_val = LystoDataset(filepath="data/training.h5", interval=150, size=32, num_of_imgs=51, train=False)
+    imageSet = LystoDataset(filepath="data/training.h5", interval=150, tile_size=32, num_of_imgs=51)
+    imageSet_val = LystoDataset(filepath="data/training.h5", interval=150, tile_size=32, num_of_imgs=51, train=False)
     train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 

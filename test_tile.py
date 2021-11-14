@@ -80,7 +80,7 @@ def test(testset, batch_size, workers, model, output_path):
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
         now, epoch, args.tile_size, args.interval, args.threshold)), 'w', newline="")
     w = csv.writer(fconv)
-    w.writerow(['tile_size', '{}'.format(testset.size)])
+    w.writerow(['tile_size', '{}'.format(testset.tile_size)])
     w.writerow(['interval', '{}'.format(testset.interval)])
     w.writerow(['idx', 'grid', 'prob'])
     fconv.close()
@@ -149,7 +149,7 @@ def rank(testset, probs):
 #     """把预测得到的阳性细胞区域标在图上。
 #
 #     :param testset:         测试集
-#     :param tiles:         要标注的补丁
+#     :param tiles:           要标注的补丁
 #     :param probs:           补丁对应的概率
 #     :param topk:            标注的补丁数
 #     :param output_path:     图像存储路径
@@ -178,7 +178,7 @@ def heatmap(testset, tiles, probs, groups, output_path):
     """把预测得到的阳性细胞区域标在图上。
 
     :param testset:         测试集
-    :param tiles:         要标注的补丁
+    :param tiles:           要标注的补丁
     :param probs:           补丁对应的概率
     :param output_path:     图像存储路径
     """
@@ -194,14 +194,14 @@ def heatmap(testset, tiles, probs, groups, output_path):
 
         if i == len(groups) or groups[i] != groups[i - 1]:
             img = testset.images[groups[i - 1]]
-            mask = np.zeros((img.shape[0], img.shape[1]))
+            mask = np.zeros(testset.image_size)
 
             for j in range(i - count, i):
-                tile_mask = np.full((testset.size, testset.size), probs[j])
+                tile_mask = np.full((testset.tile_size, testset.tile_size), probs[j])
                 grid = list(map(int, tiles[j]))
 
-                mask[grid[0]: grid[0] + testset.size,
-                     grid[1]: grid[1] + testset.size] = tile_mask
+                mask[grid[0]: grid[0] + testset.tile_size,
+                     grid[1]: grid[1] + testset.tile_size] = tile_mask
 
                 # 输出信息
                 # print("prob_{}:{}".format(groups[i - 1], probs[j]))
