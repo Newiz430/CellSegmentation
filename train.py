@@ -32,7 +32,6 @@ parser.add_argument('-e', '--epochs', type=int, default=10, help='total number o
 parser.add_argument('--tile_only', action='store_true', help='if whole image mode is disabled')
 parser.add_argument('-E', '--encoder', type=str, default='resnet18',
                     help='structure of the shared encoder, [resnet18 (default), resnet34, resnet50]')
-parser.add_argument('-b', '--tile_batch_size', type=int, default=64, help='mini-batch size of tiles (default: 64)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='mini-batch size of images (default: 64)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
@@ -44,6 +43,7 @@ parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
 parser.add_argument('-n', '--topk_neg', default=30, type=int,
                     help='top k tiles from a negative image (default: 30, standard MIL)')
 parser.add_argument('-t', '--tile_size', type=int, default=32, help='size of a certain tile (default: 32)')
+parser.add_argument('-i', '--interval', type=int, default=20, help='interval between adjacent tiles (default: 20)')
 parser.add_argument('-c', '--threshold', type=float, default=0.88,
                     help='minimal prob for tiles to show in generating segmentation masks (default: 0.88)')
 parser.add_argument('--distributed', action="store_true",
@@ -103,13 +103,13 @@ trans = transforms.Compose([transforms.ToTensor(), normalize])
 # trans = transforms.ToTensor()
 
 print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epochs in total | Validate every {} epoch(s) | Image batch size: {} | Negative top-k: {}"
+print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | Image batch size: {} | Negative top-k: {}"
       .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
               args.encoder, args.epochs, args.test_every, args.image_batch_size, args.topk_neg))
 
 print('Loading Dataset ...')
-trainset = LystoDataset(filepath="data/training.h5", transform=trans)
-valset = LystoDataset(filepath="data/training.h5", train=False, transform=trans)
+trainset = LystoDataset(filepath="data/training.h5", tile_size=args.tile_size, interval=args.interval, transform=trans, num_of_imgs=0)
+valset = LystoDataset(filepath="data/training.h5", tile_size=args.tile_size, interval=args.interval, transform=trans, train=False)
 
 # shuffle 只能是 False
 # 暂定对 tile 的训练和对 image 的训练所用的 batch_size 是一样的
@@ -210,6 +210,7 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
             # Alternative training step
             else:
                 trainset.setmode(2)
+                print("Training alternatively (seg head is trained every {} iterations) ...".format(len(train_loader_backward) // mini_epochs))
                 # if epoch == total_epochs:
                 #     trainset.visualize_bboxes()  # tile visualize testing
                 alpha = 1.
@@ -237,7 +238,7 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
                     print('Validating ...')
 
                     probs_p = inference_tiles(val_loader, batch_size, epoch, total_epochs)
-                    metrics_p = validation_tile(probs_p)
+                    metrics_p = validation_tile(probs_p, tiles_per_pos)
                     print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_p))
 
                     writer.add_scalar('tile error rate', metrics_p[0], epoch)
@@ -246,8 +247,8 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
 
                     # image validating
                     valset.setmode(4)
-                    probs_s, reg, seg = inference_image(val_loader, batch_size, epoch, total_epochs)
-                    metrics_s = validation_image(probs_s, reg, seg)
+                    probs_s, reg = inference_image(val_loader, batch_size, epoch, total_epochs)
+                    metrics_s = validation_image(probs_s, reg)
                     print('image error: {} | image FPR: {} | image FNR: {}\nMAE: {} | MSE: {}\n'.format(*metrics_s))
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
                     fconv.write('{},{},{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_p + metrics_s)))
@@ -287,11 +288,9 @@ def inference_tiles(loader, batch_size, epoch, total_epochs):
 
     probs = torch.Tensor(len(loader.dataset))
     with torch.no_grad():
-        tile_bar = tqdm(loader, total=len(loader) + 1)
+        tile_bar = tqdm(loader, desc="tile forwarding")
+        tile_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
         for i, input in enumerate(tile_bar):
-            tile_bar.set_postfix(step="tile forwarding",
-                                  epoch="[{}/{}]".format(epoch, total_epochs),
-                                  batch="[{}/{}]".format(i + 1, len(loader) + 1))
             # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
             output = model(input[0].to(device)) # input: [2, b, c, h, w]
             output = F.softmax(output, dim=1)
@@ -341,17 +340,15 @@ def inference_image(loader, batch_size, epoch, total_epochs):
     nums = torch.tensor(())
     feats = torch.tensor(())
     with torch.no_grad():
-        image_bar = tqdm(loader, total=len(loader) + 1)
+        image_bar = tqdm(loader, desc="image forwarding")
+        image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
         for i, (data, label_cls, label_num, _) in enumerate(image_bar):
-            image_bar.set_postfix(step="image forwarding",
-                                  epoch="[{}/{}]".format(epoch, total_epochs),
-                                  batch="[{}/{}]".format(i + 1, len(loader) + 1))
             output = model(data.to(device))
             output_cls = F.softmax(output[0], dim=1)
             probs = torch.cat((probs, output_cls.detach()[:, 1].clone().cpu()), dim=0)
             nums = torch.cat((nums, output[1].detach()[:, 0].clone().cpu()), dim=0)
-            feats = torch.cat((feats, output[2].detach().clone().cpu()), dim=0)
-    return probs.numpy(), nums.numpy(), feats.numpy()
+
+    return probs.numpy(), nums.numpy()
 
 
 def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimizer):
@@ -371,11 +368,9 @@ def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimi
 
     tile_num = 0
     train_loss = 0.
-    train_bar = tqdm(loader, total=len(loader))
+    train_bar = tqdm(loader, desc="tile training")
     for i, (data, label) in enumerate(train_bar):
-        train_bar.set_postfix(step="tile training",
-                              epoch="[{}/{}]".format(epoch, total_epochs),
-                              batch="[{}/{}]".format(i + 1, len(loader) + 1))
+        train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
 
         output = model(data.to(device))
         optimizer.zero_grad()
@@ -419,11 +414,9 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epochs, mode
     image_seg_loss = 0.
     image_loss = 0.
 
-    train_bar = tqdm(loader, total=len(loader) + 1)
+    train_bar = tqdm(loader, desc="alternative training")
+    train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (data, labels) in enumerate(train_bar):
-        train_bar.set_postfix(step="alternative training",
-                              epoch="[{}/{}]".format(epoch, total_epochs),
-                              batch="[{}/{}]".format(i + 1, len(loader) + 1))
 
         # pt.1: tile training
         model.setmode("tile")
@@ -473,9 +466,10 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epochs, mode
         # print("image data size:", data[0].size(0))
         # print("tile data size:", data[1].size(0))
 
-        if (i + 1) % ((len(loader) + 1) // mini_epochs) == 0:
-            train_seg(train_loader_forward, batch_size, model, crit_seg, optimizer, threshold, save_masks=True)
-            # TODO: save masks of all data after n iterations
+        # if (i + 1) % ((len(loader) + 1) // mini_epochs) == 0:
+        #     # train_seg(train_loader_forward, kwargs)
+        #     train_seg(train_loader_forward, batch_size, epoch, total_epochs, model, crit_seg, optimizer, threshold, save_masks=False)
+        #     # TODO: save masks of all data after n iterations
 
 
     # print("Total tiles:", tile_num)
@@ -490,14 +484,17 @@ def train_alternative(loader, batch_size, epoch, total_epochs, mini_epochs, mode
     return tile_loss, image_cls_loss, image_reg_loss, image_seg_loss, image_loss
 
 
-def train_seg(loader, batch_size, model, crit_seg, optimizer, threshold, save_masks):
+def train_seg(loader, batch_size, epoch, total_epochs, model, crit_seg, optimizer, threshold, save_masks):
 
     # pt.3 segment training
+    trainset.setmode(1)
     model.setmode("segment")
 
     probs = torch.Tensor(len(loader.dataset))
     with torch.no_grad():
-        for i, input in enumerate(loader):
+        tile_bar = tqdm(loader, desc="tile forwarding (seg)", leave=False)
+        tile_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+        for i, input in enumerate(tile_bar):
             model.setmode("tile")
             model.eval()
             output = model(input[0].to(device))
@@ -517,12 +514,12 @@ def train_seg(loader, batch_size, model, crit_seg, optimizer, threshold, save_ma
     pseudo_masks = generate_masks(trainset, tiles[index], groups[index], save_masks)
 
     # TODO: create a new dataset for masks
-
+    trainset.setmode(2)
     model.train()
     # TODO: load data for segmentation head training
 
 
-def validation_tile(probs):
+def validation_tile(probs, tiles_per_pos):
     """tile mode 的验证"""
 
     global threshold
@@ -534,11 +531,11 @@ def validation_tile(probs):
 
     val_index = np.array([prob > threshold for prob in val_probs])
 
-    # 制作分类用的 label：根据计数标签 = n，前 n 个 tile 为阳性
+    # 制作分类用的 label：根据计数标签 = n，前 n * tiles_per_pos 个 tile 为阳性
     labels = np.zeros(len(val_probs))
     for i in range(1, len(val_probs) + 1):
         if i == len(val_probs) or val_groups[i] != val_groups[i - 1]:
-            labels[i - valset.labels[val_groups[i - 1]]: i] = [1] * valset.labels[val_groups[i - 1]]
+            labels[i - valset.labels[val_groups[i - 1]] * tiles_per_pos: i] = [1] * valset.labels[val_groups[i - 1]] * tiles_per_pos
 
     # 计算错误率、FPR、FNR
     err, fpr, fnr = calc_err(val_index, labels)
@@ -558,7 +555,8 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
     idx = len(dataset)
     pseudo_masks = []
 
-    for i in range(1, len(groups) + 1):
+    mask_bar = tqdm(range(1, len(groups) + 1), desc="mask generating (seg)", leave=False)
+    for i in mask_bar:
         count += 1
 
         if i == len(groups) or groups[i] != groups[i - 1]:
@@ -575,13 +573,15 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
             pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
             if save_masks:
                 Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
-                    os.path.join(output_path, "rgb/{}.png".format(groups[i - 1])),
+                    os.path.join(output_path, "rgb/{}_{}.png".format(groups[i - 1], dataset.labels[groups[i - 1]])),
                     optimize=True)
                 Image.fromarray(np.uint8(mask * 255)).save(
                     os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
                     optimize=True)
 
             count = 0
+
+            print(len(pseudo_masks))
 
             # 没有阳性 tile 的时候。。。
             if i == len(groups) and groups[i - 1] != idx or groups[i - 1] != groups[i] - 1:
@@ -591,7 +591,7 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
                     pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
                     if save_masks:
                         Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
-                            os.path.join(output_path, "rgb/{}.png".format(groups[i - 1])),
+                            os.path.join(output_path, "rgb/{}_{}.png".format(groups[i - 1], dataset.labels[groups[i - 1]])),
                             optimize=True)
                         Image.fromarray(np.uint8(mask * 255)).save(
                             os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
@@ -599,7 +599,8 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
 
     return pseudo_masks
 
-def validation_image(probs, reg, seg):
+
+def validation_image(probs, reg):
     """image mode 的验证"""
 
     # probs = np.round(probs)  # go soft?

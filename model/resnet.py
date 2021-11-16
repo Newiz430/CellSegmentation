@@ -85,7 +85,8 @@ class MILResNet(nn.Module):
         self.inplanes = 64
         super(MILResNet, self).__init__()
         # encoder
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1_image = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1_tile = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -199,11 +200,10 @@ class MILResNet(nn.Module):
 
     def forward(self, x: torch.Tensor): # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
-        x = self.conv1(x) # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
+        x = self.conv1_tile(x) if self.mode == "tile" else self.conv1_image(x) # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-
         x1 = self.layer1(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
         x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 128, 38, 38]
         x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 256, 19, 19]

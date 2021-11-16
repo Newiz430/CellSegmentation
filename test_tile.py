@@ -29,8 +29,8 @@ parser.add_argument('-p', '--tile_size', type=int, default=32, help='size of eac
 parser.add_argument('-c', '--threshold', type=float, default=0.88,
                     help='minimal prob for tiles to show in heatmap (default: 0.88)')
 parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
-parser.add_argument('-o', '--output', type=str, default='./output/{}/'.format(now),
-                    help='path of output details .csv file')
+parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
+                    help='path of output details .csv file (default: ./output/<timestamp>)')
 
 args = parser.parse_args()
 
@@ -63,7 +63,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.device
 model.to(device)
 
 
-def test(testset, batch_size, workers, model, output_path):
+def test_tile(testset, batch_size, workers, output_path):
     """
     :param testset:         测试数据集
     :param batch_size:      Dataloader 打包的小 batch 大小
@@ -72,7 +72,7 @@ def test(testset, batch_size, workers, model, output_path):
     :param output_path:     保存模型文件的目录
     """
 
-    global epoch
+    global epoch, model
 
     test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
@@ -87,8 +87,7 @@ def test(testset, batch_size, workers, model, output_path):
 
     print('Start testing ...')
 
-    model.setmode("tile")
-    model.eval()
+    testset.setmode("tile")
     probs = predict_tiles(test_loader, batch_size)
     tiles, probs, groups = rank(testset, probs)
 
@@ -102,17 +101,15 @@ def predict_tiles(loader, batch_size):
     :param loader:          训练集的迭代器
     :param batch_size:      DataLoader 打包的小 batch 大小
     """
-    global device
+    global device, model
 
     model.setmode("tile")
     model.eval()
 
     probs = torch.Tensor(len(loader.dataset))
     with torch.no_grad():
-        tile_bar = tqdm(loader, total=len(loader) + 1)
+        tile_bar = tqdm(loader, desc="tile predicting")
         for i, input in enumerate(tile_bar):
-            tile_bar.set_postfix(step="tile forwarding",
-                                  batch="[{}/{}]".format(i + 1, len(loader) + 1))
             # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
             output = model(input.to(device)) # input: [2, b, c, h, w]
             output = F.softmax(output, dim=1)
@@ -123,7 +120,7 @@ def predict_tiles(loader, batch_size):
 
 
 def rank(testset, probs):
-    """寻找最大概率的 tile ，用于作图。
+    """按概率对 tile 排序，便于与置信度进行比较。
 
     :param testset:     测试集
     :param probs:       求得的概率
@@ -232,6 +229,6 @@ if __name__ == "__main__":
 
     print('Loading Dataset ...')
     imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans,
-                                 interval=args.interval, size=args.tile_size, num_of_imgs=20)
+                                 interval=args.interval, tile_size=args.tile_size, num_of_imgs=20)
 
-    test(imageSet_test, batch_size=args.batch_size, workers=args.workers, model=model, output_path=args.output)
+    test_tile(imageSet_test, batch_size=args.batch_size, workers=args.workers, output_path=args.output)

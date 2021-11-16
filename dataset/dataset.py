@@ -67,7 +67,7 @@ class LystoDataset(Dataset):
 
         assert len(self.labels) == len(self.images)
 
-        self.image_size = self.images[0].shape
+        self.image_size = self.images[0].shape[0:2]
         self.mode = None
         self.transform = transform
 
@@ -100,7 +100,7 @@ class LystoDataset(Dataset):
         if self.mode == 1:
             (x, y) = self.tiles_grid[idx]
             tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
-            if self.transform:
+            if self.transform is not None:
                 tile = self.transform(tile)
 
             label = self.labels[self.tileIDX[idx]]
@@ -146,7 +146,7 @@ class LystoDataset(Dataset):
             #     utils.save_image(image, "test/img{}.png".format(idx))
             #     print("Image is saved.")
 
-            if self.transform:
+            if self.transform is not None:
                 tiles = [self.transform(tile) for tile in tiles]
                 image = self.transform(image)
 
@@ -157,7 +157,7 @@ class LystoDataset(Dataset):
         elif self.mode == 3:
             tileIDX, (x, y), label = self.train_data[idx]
             tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
-            if self.transform:
+            if self.transform is not None:
                 tile = self.transform(tile)
             return tile, label
 
@@ -167,7 +167,7 @@ class LystoDataset(Dataset):
             label_cls = 0 if self.labels[idx] == 0 else 1
             label_reg = self.labels[idx]
 
-            if self.transform:
+            if self.transform is not None:
                 image = self.transform(image)
             return image, label_cls, label_reg, []
 
@@ -214,7 +214,7 @@ class LystoTestset(Dataset):
         self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
         self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
-        self.size = tile_size
+        self.tile_size = tile_size
 
         tileIDX = -1
         for i, (organ, img) in enumerate(zip(f['organ'], f['x'])):
@@ -226,26 +226,54 @@ class LystoTestset(Dataset):
             tileIDX += 1
             self.organs.append(organ)
             self.images.append(img)
-            t = get_tiles(img, self.interval, self.size)
+            t = get_tiles(img, self.interval, self.tile_size)
             self.tiles_grid.extend(t) # 获取 tile
             self.tileIDX.extend([tileIDX] * len(t))
 
-        self.image_size = self.images[0].shape
+        self.image_size = self.images[0].shape[0:2]
         self.transform = transform
+        self.mode = None
+
+    def setmode(self, mode):
+        self.mode = mode
 
     def __getitem__(self, idx):
+        # test_tile
+        if self.mode == "tile":
 
-        # organ = self.organs[idx]
+            # organ = self.organs[idx]
+            (x, y) = self.tiles_grid[idx]
+            tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
+            if self.transform is not None:
+                tile = self.transform(tile)
 
-        (x, y) = self.tiles_grid[idx]
-        tile = self.images[self.tileIDX[idx]][x:x + self.size, y:y + self.size]
-        if self.transform is not None:
-            tile = self.transform(tile)
+            return tile
 
-        return tile
+        # test_count
+        elif self.mode == "count":
+
+            image = self.images[idx]
+            if self.transform is not None:
+                image = self.transform(image)
+
+            return image
+
+        else:
+            raise Exception("Something wrong in setmode.")
 
     def __len__(self):
-        return len(self.tileIDX)
+        if self.mode == "tile":
+            return len(self.tileIDX)
+        elif self.mode == "count":
+            return len(self.images)
+        else:
+            raise Exception("Something wrong in setmode.")
+
+
+class MaskSet(Dataset):
+
+    def __init__(self):
+        pass
 
 
 def get_tiles(image, interval=10, size=32):
