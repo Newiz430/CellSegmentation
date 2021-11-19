@@ -10,6 +10,7 @@ if torch.cuda.is_available():
 else:
     torch.manual_seed(1)
 
+
 def summary_param(model, batch_size, gpu='0'):
 
     if gpu is not None:

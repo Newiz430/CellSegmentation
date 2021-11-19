@@ -20,9 +20,9 @@ now = int(time.time())
 parser = argparse.ArgumentParser(prog="test_count.py", description='Cell count evaluation')
 parser.add_argument('-m', '--model', type=str, default='checkpoint/checkpoint_10epochs.pth',
                     help='path to pretrained model (default: checkpoint/checkpoint_10epochs.pth)')
-parser.add_argument('-b', '--batch_size', type=int, default=64, help='image batch size (default: 64)')
+parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='batch size of images (default: 64)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
-parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
+parser.add_argument('-d', '--device', type=int, default=0, help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now),
                     help='path of output details .csv file (default: ./output/<timestamp>)')
 
@@ -36,7 +36,7 @@ else:
 
 print("Testing settings: ")
 print("Model: {} | Image batch size: {} | Output directory: {}"
-      .format(args.model, args.batch_size, args.output))
+      .format(args.model, args.image_batch_size, args.output))
 if not os.path.exists(args.output):
     os.mkdir(args.output)
 
@@ -52,8 +52,8 @@ normalize = transforms.Normalize(
 trans = transforms.Compose([transforms.ToTensor(), normalize])
 # trans = transforms.ToTensor()
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-os.environ['CUDA_VISIBLE_DEVICES'] = args.device
+os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu", args.device)
 model.to(device)
 
 
@@ -71,7 +71,7 @@ def test_count(testset, batch_size, workers, output_path):
 
     testset.setmode("count")
     output = predict_counts(test_loader)
-    for i, count in enumerate(output):
+    for i, count in enumerate(output, start=1):
         w.writerow([i, count])
 
     fconv.close()
@@ -88,18 +88,21 @@ def predict_counts(loader):
     model.setmode("image")
     model.eval()
 
+    output = np.array([])
+
     with torch.no_grad():
         image_bar = tqdm(loader, desc="cell counting")
-        output = [model(input.to(device))[1].squeeze() for input in image_bar]
+        for input in image_bar:
+            output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
 
-    print("output.size = ", np.array(output).shape)
-    return output
+    # print("output.size = ", output.shape)
+    return np.round(output).astype(int)
 
 
 if __name__ == "__main__":
     from dataset.dataset import LystoTestset
 
     print('Loading Dataset ...')
-    imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans)
+    imageSet_test = LystoTestset(filepath="data/test.h5", transform=trans)
 
-    test_count(imageSet_test, batch_size=args.batch_size, workers=args.workers, output_path=args.output)
+    test_count(imageSet_test, batch_size=args.image_batch_size, workers=args.workers, output_path=args.output)

@@ -14,7 +14,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import torchvision.transforms as transforms
-import sklearn.metrics as metrics
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -23,6 +22,7 @@ from torchvision.utils import save_image
 from dataset.dataset import LystoDataset
 import model.resnet as models
 from utils.collate import default_collate
+from quadratic_weighted_kappa import quadratic_weighted_kappa as qwk
 
 warnings.filterwarnings("ignore")
 
@@ -32,7 +32,8 @@ parser.add_argument('-e', '--epochs', type=int, default=10, help='total number o
 parser.add_argument('--tile_only', action='store_true', help='if whole image mode is disabled')
 parser.add_argument('-E', '--encoder', type=str, default='resnet18',
                     help='structure of the shared encoder, [resnet18 (default), resnet34, resnet50]')
-parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='mini-batch size of images (default: 64)')
+parser.add_argument('-b', '--tile_batch_size', type=int, default=40960, help='batch size of tiles (default: 40960)')
+parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='batch size of images (default: 64)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
@@ -103,43 +104,51 @@ trans = transforms.Compose([transforms.ToTensor(), normalize])
 # trans = transforms.ToTensor()
 
 print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | Image batch size: {} | Negative top-k: {}"
-      .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
-              args.encoder, args.epochs, args.test_every, args.image_batch_size, args.topk_neg))
+print("""Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | 
+Tile batch size: {} | Image batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"""
+    .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
+    args.encoder, args.epochs, args.test_every, args.tile_batch_size, args.image_batch_size,
+    args.tile_size, args.interval, args.topk_neg))
 
 print('Loading Dataset ...')
-trainset = LystoDataset(filepath="data/training.h5", tile_size=args.tile_size, interval=args.interval, transform=trans, num_of_imgs=0)
-valset = LystoDataset(filepath="data/training.h5", tile_size=args.tile_size, interval=args.interval, transform=trans, train=False)
+trainset = LystoDataset(filepath="data/training.h5", transform=trans, tile_size=args.tile_size,
+                        interval=args.interval, num_of_imgs=0)
+valset = LystoDataset(filepath="data/training.h5", transform=trans, tile_size=args.tile_size,
+                      interval=args.interval, train=False)
 
 # shuffle 只能是 False
-# 暂定对 tile 的训练和对 image 的训练所用的 batch_size 是一样的
 collate_fn = default_collate
 # TODO: how can I split the training step for distributed parallel training?
 train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-train_loader_forward = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=False,
                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
-                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True, collate_fn=collate_fn)
-val_loader = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
-                        sampler=val_sampler, pin_memory=True)
+train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+                                        num_workers=args.workers, sampler=train_sampler, pin_memory=True)
+train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True,
+                                         collate_fn=collate_fn)
+val_loader_tile = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
+                             sampler=val_sampler, pin_memory=True)
+val_loader_image = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+                              sampler=val_sampler, pin_memory=True)
 
 
-def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_every, model,
-          crit_cls, crit_reg, crit_seg, optimizer, threshold, tiles_per_pos, topk_neg, output_path):
+def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, crit_cls, crit_reg, crit_seg,
+          optimizer, threshold, tiles_per_pos, topk_neg, output_path):
     """one training epoch = tile mode -> image mode
 
-    :param batch_size:      DataLoader 打包的小 batch 大小
-    :param workers:         DataLoader 使用的进程数
+    :param tile_only:       是否只训练实例分支
     :param total_epochs:    迭代总次数
     :param last_epoch:      上一次迭代的次数（当继续训练时）
     :param mini_epochs:     mini_epoch 的数目
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
-    :param crit_cls:        分类器损失函数
+    :param crit_cls:        分类损失函数
     :param crit_reg:        回归损失函数
     :param crit_seg:        分割损失函数
     :param optimizer:       优化器
+    :param threshold:       验证模型所用的置信度
     :param tiles_per_pos:   在**单个阳性细胞**上选取的图像块数 (topk_pos = tiles_per_pos * label)
     :param topk_neg:        每次在阴性细胞图像上选取的 top-k tile **总数**
     :param output_path:     保存模型文件和训练数据结果的目录
@@ -153,13 +162,11 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
     fconv.close()
     # 训练结果保存在 output_path/<timestamp>-training.csv
     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
-    fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_error,image_fpr,image_fnr,mae,mse\n')
+    fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_error,image_fpr,image_fnr,mse,qwk\n')
     fconv.close()
     # 验证结果保存在 output_path/<timestamp>-validation.csv
 
-    print('Start training ...')
-    # if resume:
-    #     print('Resuming from the checkpoint (epochs: {}).'.format(model['epoch']))
+    print('Start training ...'if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
     start = int(time.time())
     with SummaryWriter() as writer:
@@ -167,13 +174,13 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
 
             # Forwarding step
             trainset.setmode(1)
-            probs = inference_tiles(train_loader_forward, batch_size, epoch, total_epochs)
+            probs = inference_tiles(train_loader_forward, epoch, total_epochs)
             sample(probs, tiles_per_pos, topk_neg)
 
             # Training tile-mode only
             if tile_only:
                 trainset.setmode(3)
-                loss = train_tile(train_loader_forward, batch_size, epoch, total_epochs, model, crit_cls, optimizer)
+                loss = train_tile(train_loader_backward_tile, epoch, total_epochs, model, crit_cls, optimizer)
                 print("tile loss: {:.4f}".format(loss))
                 fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
                 fconv.write('{},{}\n'.format(epoch, loss))
@@ -186,16 +193,16 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
                     valset.setmode(1)
                     print('Validating ...')
 
-                    probs_p = inference_tiles(val_loader, batch_size, epoch, total_epochs)
-                    metrics_p = validation_tile(probs_p)
-                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_p))
+                    probs_t = inference_tiles(val_loader_tile, epoch, total_epochs)
+                    metrics_t = validation_tile(probs_t, tiles_per_pos)
+                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
 
-                    writer.add_scalar('tile error rate', metrics_p[0], epoch)
-                    writer.add_scalar('tile false positive rate', metrics_p[1], epoch)
-                    writer.add_scalar('tile false negative rate', metrics_p[2], epoch)
+                    writer.add_scalar('tile error rate', metrics_t[0], epoch)
+                    writer.add_scalar('tile false positive rate', metrics_t[1], epoch)
+                    writer.add_scalar('tile false negative rate', metrics_t[2], epoch)
                     
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{}\n'.format(epoch, *metrics_p))
+                    fconv.write('{},{},{},{}\n'.format(epoch, *metrics_t))
                     fconv.close()
 
                     # 每验证一次，保存模型
@@ -210,14 +217,13 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
             # Alternative training step
             else:
                 trainset.setmode(2)
-                print("Training alternatively (seg head is trained every {} iterations) ...".format(len(train_loader_backward) // mini_epochs))
                 # if epoch == total_epochs:
                 #     trainset.visualize_bboxes()  # tile visualize testing
                 alpha = 1.
                 beta = 0.1
                 gamma = 0.9
                 delta = 0.1
-                loss = train_alternative(train_loader_backward, batch_size, epoch, total_epochs, mini_epochs, model, crit_cls,
+                loss = train_alternative(train_loader_backward_image, epoch, total_epochs, mini_epochs, model, crit_cls,
                                          crit_reg, crit_seg, optimizer, threshold, alpha, beta, gamma, delta)
 
                 print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | image seg loss: {:.4f} | image loss: {:.4f}"
@@ -237,28 +243,37 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
                     valset.setmode(1)
                     print('Validating ...')
 
-                    probs_p = inference_tiles(val_loader, batch_size, epoch, total_epochs)
-                    metrics_p = validation_tile(probs_p, tiles_per_pos)
-                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_p))
+                    probs_t = inference_tiles(val_loader_tile, epoch, total_epochs)
+                    metrics_t = validation_tile(probs_t, tiles_per_pos)
+                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
 
-                    writer.add_scalar('tile error rate', metrics_p[0], epoch)
-                    writer.add_scalar('tile false positive rate', metrics_p[1], epoch)
-                    writer.add_scalar('tile false negative rate', metrics_p[2], epoch)
+                    writer.add_scalar('tile error rate', metrics_t[0], epoch)
+                    writer.add_scalar('tile false positive rate', metrics_t[1], epoch)
+                    writer.add_scalar('tile false negative rate', metrics_t[2], epoch)
 
                     # image validating
                     valset.setmode(4)
-                    probs_s, reg = inference_image(val_loader, batch_size, epoch, total_epochs)
-                    metrics_s = validation_image(probs_s, reg)
-                    print('image error: {} | image FPR: {} | image FNR: {}\nMAE: {} | MSE: {}\n'.format(*metrics_s))
+                    probs_i, reg = inference_image(val_loader_image, epoch, total_epochs)
+
+                    regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+                        now, epoch)), 'w', newline="")
+                    w = csv.writer(regconv, delimiter=',')
+                    w.writerow(['id', 'count'])
+                    for i, count in enumerate(reg, start=1):
+                        w.writerow([i, count])
+                    regconv.close()
+
+                    metrics_i = validation_image(probs_i, reg)
+                    print('image error: {} | image FPR: {} | image FNR: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_p + metrics_s)))
+                    fconv.write('{},{},{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
                     fconv.close()
 
-                    writer.add_scalar('image error rate', metrics_s[0], epoch)
-                    writer.add_scalar('image false positive rate', metrics_s[1], epoch)
-                    writer.add_scalar('image false negative rate', metrics_s[2], epoch)
-                    writer.add_scalar('image mae', metrics_s[3], epoch)
-                    writer.add_scalar('image mse', metrics_s[4], epoch)
+                    writer.add_scalar('image error rate', metrics_i[0], epoch)
+                    writer.add_scalar('image false positive rate', metrics_i[1], epoch)
+                    writer.add_scalar('image false negative rate', metrics_i[2], epoch)
+                    writer.add_scalar('image mse', metrics_i[3], epoch)
+                    writer.add_scalar('image qwk', metrics_i[4], epoch)
 
                     # 每验证一次，保存模型
                     obj = {
@@ -273,11 +288,10 @@ def train(batch_size, tile_only, total_epochs, last_epoch, mini_epochs, test_eve
     print("\nTrained for {} epochs. Runtime: {}s".format(total_epochs, end - start))
 
 
-def inference_tiles(loader, batch_size, epoch, total_epochs):
+def inference_tiles(loader, epoch, total_epochs):
     """前馈推导一次模型，获取实例分类概率。
 
     :param loader:          训练集的迭代器
-    :param batch_size:      DataLoader 打包的小 batch 大小
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
     """
@@ -296,7 +310,7 @@ def inference_tiles(loader, batch_size, epoch, total_epochs):
             output = F.softmax(output, dim=1)
             # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
             # input.size(0) 返回 batch 中的实例数量
-            probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
+            probs[i * loader.batch_size:i * loader.batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
     return probs.cpu().numpy()
 
 
@@ -323,14 +337,13 @@ def sample(probs, tiles_per_pos, topk_neg):
         print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def inference_image(loader, batch_size, epoch, total_epochs):
+def inference_image(loader, epoch, total_epochs):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。
 
     :param loader:          训练集的迭代器
-    :param batch_size:      DataLoader 打包的小 batch 大小
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
-    :return:                切片分类概率，细胞计数，分割结果
+    :return:                切片分类概率，细胞计数
     """
 
     model.setmode("image")
@@ -338,11 +351,10 @@ def inference_image(loader, batch_size, epoch, total_epochs):
 
     probs = torch.tensor(())
     nums = torch.tensor(())
-    feats = torch.tensor(())
     with torch.no_grad():
         image_bar = tqdm(loader, desc="image forwarding")
         image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
-        for i, (data, label_cls, label_num, _) in enumerate(image_bar):
+        for i, (data, label_cls, label_num) in enumerate(image_bar):
             output = model(data.to(device))
             output_cls = F.softmax(output[0], dim=1)
             probs = torch.cat((probs, output_cls.detach()[:, 1].clone().cpu()), dim=0)
@@ -351,15 +363,14 @@ def inference_image(loader, batch_size, epoch, total_epochs):
     return probs.numpy(), nums.numpy()
 
 
-def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimizer):
+def train_tile(loader, epoch, total_epochs, model, criterion, optimizer):
     """Tile training for one epoch.
 
     :param loader:          训练集的迭代器
-    :param batch_size:      DataLoader 打包的小 batch 大小
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
     :param model:           网络模型
-    :param criterion:       用于补丁级训练的损失函数（criterion_cls）
+    :param criterion:       损失函数（criterion_cls）
     :param optimizer:       优化器
     """
     global device
@@ -385,12 +396,11 @@ def train_tile(loader, batch_size, epoch, total_epochs, model, criterion, optimi
     return train_loss
 
 
-def train_alternative(loader, batch_size, epoch, total_epochs, mini_epochs, model, crit_cls, crit_reg, crit_seg, optimizer,
+def train_alternative(loader, epoch, total_epochs, mini_epochs, model, crit_cls, crit_reg, crit_seg, optimizer,
                       threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
     :param loader:          训练集的迭代器
-    :param batch_size:      DataLoader 打包的小 batch 大小
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
     :param mini_epochs:     一个 mini_epoch 包含迭代的次数
@@ -547,7 +557,6 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
 
     :param dataset:         训练数据集
     :param tiles:           要标注的补丁
-    :param probs:           补丁对应的概率
     :param output_path:     图像存储路径
     """
 
@@ -607,9 +616,10 @@ def validation_image(probs, reg):
     # TODO: is it necessary to validate image classification?
     # err, fpr, fnr = calc_err(probs, np.sign(valset.labels))
     err = fpr = fnr = 0
-    mae = metrics.mean_absolute_error(valset.labels, reg)
-    mse = metrics.mean_squared_error(valset.labels, reg)
-    return err, fpr, fnr, mae, mse
+    mse = F.mse_loss(torch.from_numpy(reg), torch.tensor(valset.labels))
+    score = qwk(np.round(reg), valset.labels) * 100
+
+    return err, fpr, fnr, mse.item(), score
 
 
 def calc_err(pred, real):
@@ -626,8 +636,7 @@ def calc_err(pred, real):
 
 if __name__ == "__main__":
 
-    train(batch_size=args.image_batch_size,
-          tile_only=args.tile_only,
+    train(tile_only=args.tile_only,
           total_epochs=args.epochs,
           last_epoch=last_epoch,
           mini_epochs=args.mini_epochs,

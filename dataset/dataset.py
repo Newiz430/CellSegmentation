@@ -11,20 +11,14 @@ import torchvision.utils as utils
 
 class LystoDataset(Dataset):
 
-    def __init__(self, filepath=None,
-                 transform=None,
-                 train=True,
-                 kfold=10,
-                 interval=20,
-                 tile_size=32,
-                 num_of_imgs=0):
+    def __init__(self, filepath, transform=None, tile_size=None, interval=None, train=True, kfold=10, num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
         :param transform:   数据预处理方式
         :param train:       训练集 / 验证集，默认为训练集
         :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
-        :param interval:    选取 tile 的间隔，默认值为 20px
-        :param tile_size:   一个 tile 的边长，默认值为 32px
+        :param interval:    选取 tile 的间隔步长
+        :param tile_size:   一个 tile 的边长
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
@@ -42,8 +36,8 @@ class LystoDataset(Dataset):
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
+        self.tileIDX = []         # 每个 tile 对应的图像编号，array ( 20000 * n )
+        self.tiles_grid = []      # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -61,11 +55,14 @@ class LystoDataset(Dataset):
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
-            t = get_tiles(img, self.interval, self.tile_size)
-            self.tiles_grid.extend(t) # 获取 tiles
-            self.tileIDX.extend([tileIDX] * len(t)) # 每个 tile 对应的 image 标签
 
-        assert len(self.labels) == len(self.images)
+            if self.interval is not None and self.tile_size is not None:
+
+                t = get_tiles(img, self.interval, self.tile_size)
+                self.tiles_grid.extend(t) # 获取 tiles
+                self.tileIDX.extend([tileIDX] * len(t)) # 每个 tile 对应的 image 标签
+
+        assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 
         self.image_size = self.images[0].shape[0:2]
         self.mode = None
@@ -98,6 +95,8 @@ class LystoDataset(Dataset):
 
         # top-k 选取模式 (tile mode)
         if self.mode == 1:
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile inference. "
+
             (x, y) = self.tiles_grid[idx]
             tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
             if self.transform is not None:
@@ -108,6 +107,8 @@ class LystoDataset(Dataset):
 
         # alternative training mode
         elif self.mode == 2:
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for alternative training. "
+
             # Get images
             image = self.images[idx]
             label_cls = 0 if self.labels[idx] == 0 else 1
@@ -155,13 +156,15 @@ class LystoDataset(Dataset):
 
         # tile-only training mode
         elif self.mode == 3:
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile-mode training. "
+
             tileIDX, (x, y), label = self.train_data[idx]
             tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
             if self.transform is not None:
                 tile = self.transform(tile)
             return tile, label
 
-        # image-only training & validating mode
+        # image validating mode
         elif self.mode == 4:
             image = self.images[idx]
             label_cls = 0 if self.labels[idx] == 0 else 1
@@ -169,7 +172,19 @@ class LystoDataset(Dataset):
 
             if self.transform is not None:
                 image = self.transform(image)
-            return image, label_cls, label_reg, []
+            return image, label_cls, label_reg
+
+        # image-only training mode
+        elif self.mode == 5:
+            image = self.images[idx]
+            label_cls = 0 if self.labels[idx] == 0 else 1
+            label_reg = self.labels[idx]
+
+            if self.transform is not None:
+                image = self.transform(image)
+            # for image-only training, images need to be unsqueezed
+            return image.unsqueeze(0), label_cls, label_reg
+
 
         else:
             raise Exception("Something wrong in setmode.")
@@ -178,12 +193,13 @@ class LystoDataset(Dataset):
     def __len__(self):
 
         if self.mode == 1:
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
             return len(self.tileIDX)
         elif self.mode == 2:
             return len(self.images)
         elif self.mode == 3:
             return len(self.train_data)
-        elif self.mode == 4:
+        elif self.mode == 4 or self.mode == 5:
             return len(self.labels)
         else:
             raise Exception("Something wrong in setmode.")
@@ -191,16 +207,13 @@ class LystoDataset(Dataset):
 
 class LystoTestset(Dataset):
 
-    def __init__(self, filepath=None,
-                 transform=None,
-                 interval=10,
-                 tile_size=32,
-                 num_of_imgs=0):
+    def __init__(self, filepath, transform=None, tile_size=None, interval=None, num_of_imgs=0):
+
         """
         :param filepath:    hdf5数据文件路径
         :param transform:   数据预处理方式
-        :param interval:    在切片上选取 tile 的间隔，默认值为 10px
-        :param tile_size:   一个 tile 的边长，默认值为 32px
+        :param interval:    选取 tile 的间隔步长
+        :param tile_size:   一个 tile 的边长
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
@@ -226,9 +239,12 @@ class LystoTestset(Dataset):
             tileIDX += 1
             self.organs.append(organ)
             self.images.append(img)
-            t = get_tiles(img, self.interval, self.tile_size)
-            self.tiles_grid.extend(t) # 获取 tile
-            self.tileIDX.extend([tileIDX] * len(t))
+
+            if self.interval is not None and self.tile_size is not None:
+
+                t = get_tiles(img, self.interval, self.tile_size)
+                self.tiles_grid.extend(t) # 获取 tile
+                self.tileIDX.extend([tileIDX] * len(t))
 
         self.image_size = self.images[0].shape[0:2]
         self.transform = transform
@@ -240,6 +256,8 @@ class LystoTestset(Dataset):
     def __getitem__(self, idx):
         # test_tile
         if self.mode == "tile":
+
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
 
             # organ = self.organs[idx]
             (x, y) = self.tiles_grid[idx]
@@ -263,6 +281,7 @@ class LystoTestset(Dataset):
 
     def __len__(self):
         if self.mode == "tile":
+            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
             return len(self.tileIDX)
         elif self.mode == "count":
             return len(self.images)
@@ -276,7 +295,7 @@ class MaskSet(Dataset):
         pass
 
 
-def get_tiles(image, interval=10, size=32):
+def get_tiles(image, interval, size):
     """
     在每张图片上生成 tile 实例。
     :param image: 输入图片矩阵，299 x 299 x 3
@@ -295,8 +314,8 @@ def get_tiles(image, interval=10, size=32):
 if __name__ == '__main__':
 
     batch_size = 2
-    imageSet = LystoDataset(filepath="data/training.h5", interval=150, tile_size=32, num_of_imgs=51)
-    imageSet_val = LystoDataset(filepath="data/training.h5", interval=150, tile_size=32, num_of_imgs=51, train=False)
+    imageSet = LystoDataset(filepath="data/training.h5", tile_size=32, interval=150, num_of_imgs=51)
+    imageSet_val = LystoDataset(filepath="data/training.h5", train=False, tile_size=32, interval=150, num_of_imgs=51)
     train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 

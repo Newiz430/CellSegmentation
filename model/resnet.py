@@ -96,18 +96,30 @@ class MILResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         # encoder 以下部分
         self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc_tile = nn.Linear(512 * block.expansion, num_classes)
+        self.fc_tile = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512 * block.expansion, num_classes)
+        )
         self.avgpool_image = nn.AdaptiveAvgPool2d((5, 5))
-        self.fc_image_cls = nn.Linear(512 * 5 * 5 * block.expansion, 2)
-        # 回归层参考了 AlexNet 的结构
+        self.fc_image_cls = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512 * 5 * 5 * block.expansion, 2)
+        )
+        # # 回归层参考了 AlexNet 的结构
+        # self.fc_image_reg = nn.Sequential(
+        #     nn.Flatten(),
+        #     nn.Dropout(),
+        #     nn.Linear(512 * 5 * 5 * block.expansion, 512),
+        #     nn.ReLU(inplace=True),
+        #     nn.Dropout(),
+        #     nn.Linear(512, 128),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(128, 1),
+        #     nn.ReLU(inplace=True)
+        # )
         self.fc_image_reg = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(512 * 5 * 5 * block.expansion, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(512, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 1),
+            nn.Flatten(),
+            nn.Linear(512 * 5 * 5 * block.expansion, 1),
             nn.ReLU(inplace=True)
         )
         self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
@@ -198,13 +210,13 @@ class MILResNet(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-    def forward(self, x: torch.Tensor): # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
+    def forward(self, x: torch.Tensor):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
         x = self.conv1_tile(x) if self.mode == "tile" else self.conv1_image(x) # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x1 = self.layer1(x) # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
+        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
+        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
         x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 128, 38, 38]
         x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 256, 19, 19]
         x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 512, 10, 10]
@@ -212,7 +224,7 @@ class MILResNet(nn.Module):
         if self.mode == "tile":
 
             x = self.avgpool_tile(x4)  # x: [nk, 512, 1, 1]
-            x = self.fc_tile(torch.flatten(x, 1))  # x: [nk, 512]
+            x = self.fc_tile(x)  # x: [nk, 512]
 
             return x
 
@@ -220,8 +232,10 @@ class MILResNet(nn.Module):
 
             # image_cls & image_reg
             out = self.avgpool_image(x4)  # [n, 512, 5, 5]
-            out_cls = self.fc_image_cls(torch.flatten(out, 1))  # [n, 2]
-            out_reg = self.fc_image_reg(torch.flatten(out, 1))  # [n, 1]
+            # out_cls = self.fc_image_cls(torch.flatten(out, 1))  # [n, 2]
+            # out_reg = self.fc_image_reg(torch.flatten(out, 1))  # [n, 1]
+            out_cls = self.fc_image_cls(out)  # [n, 2]
+            out_reg = self.fc_image_reg(out)  # [n, 1]
 
             return out_cls, out_reg
 

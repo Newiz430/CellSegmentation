@@ -20,7 +20,7 @@ now = int(time.time())
 parser = argparse.ArgumentParser(prog="test_tile.py", description='Testing & Heatmap')
 parser.add_argument('-m', '--model', type=str, default='checkpoint/checkpoint_10epochs.pth',
                     help='path to pretrained model (default: checkpoint/checkpoint_10epochs.pth)')
-parser.add_argument('-b', '--batch_size', type=int, default=64, help='mini-batch size (default: 64)')
+parser.add_argument('-b', '--batch_size', type=int, default=40960, help='batch size of tiles (default: 40960)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 # parser.add_argument('-k', '--topk', default=30, type=int,
 #                     help='top k tiles are assumed to be of the same class as the image (default: 10, standard MIL)')
@@ -28,7 +28,7 @@ parser.add_argument('-i', '--interval', type=int, default=5, help='sample interv
 parser.add_argument('-p', '--tile_size', type=int, default=32, help='size of each tile (default: 32)')
 parser.add_argument('-c', '--threshold', type=float, default=0.88,
                     help='minimal prob for tiles to show in heatmap (default: 0.88)')
-parser.add_argument('-d', '--device', type=str, default='0', help='CUDA device if available (default: \'0\')')
+parser.add_argument('-d', '--device', type=int, default=0, help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
                     help='path of output details .csv file (default: ./output/<timestamp>)')
 
@@ -58,8 +58,8 @@ normalize = transforms.Normalize(
 trans = transforms.Compose([transforms.ToTensor(), normalize])
 # trans = transforms.ToTensor()
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-os.environ['CUDA_VISIBLE_DEVICES'] = args.device
+os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu", args.device)
 model.to(device)
 
 
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     from dataset.dataset import LystoTestset
 
     print('Loading Dataset ...')
-    imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans,
-                                 interval=args.interval, tile_size=args.tile_size, num_of_imgs=20)
+    imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans, tile_size=args.tile_size,
+                                 interval=args.interval, num_of_imgs=20)
 
     test_tile(imageSet_test, batch_size=args.batch_size, workers=args.workers, output_path=args.output)
