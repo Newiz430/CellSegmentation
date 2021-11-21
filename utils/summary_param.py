@@ -2,7 +2,7 @@ import os
 import torch
 from torch import nn
 from torchsummary import summary
-from model.resnet import MILresnet18, MILresnet34, MILresnet50
+from model.mil_resnet import MILresnet18, MILresnet34, MILresnet50
 
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1)
@@ -29,5 +29,5 @@ def summary_param(model, batch_size, gpu='0'):
 if __name__ == "__main__":
 
     model = MILresnet50(pretrained=False)
-    model.fc_tile = nn.Linear(model.fc_tile.in_features, 2)
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     summary_param(model, 32)

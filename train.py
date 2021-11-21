@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import save_image
 
 from dataset.dataset import LystoDataset
-import model.resnet as models
+import model.mil_resnet as models
 from utils.collate import default_collate
 from quadratic_weighted_kappa import quadratic_weighted_kappa as qwk
 
@@ -66,11 +66,12 @@ else:
 # Model setup
 model = models.encoders[args.encoder]
 # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-model.fc_tile = nn.Linear(model.fc_tile.in_features, 2)
+model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 
 last_epoch = 0
 if args.resume:
     last_epoch = torch.load(args.resume)['epoch']
+    # last_epoch_for_scheduler = torch.load(args.resume)['scheduler']['last_epoch']
     model.load_state_dict(torch.load(args.resume)['state_dict'])
 
 if dist.is_nccl_available() and args.distributed:
@@ -93,6 +94,9 @@ crit_cls = nn.CrossEntropyLoss()
 crit_reg = nn.MSELoss()
 crit_seg = None  # TODO: CE?
 optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+# # note that last_epoch means last iteration number here
+# scheduler = optim.lr_scheduler.OneCycleLR(optimizer, epochs=args.epochs, steps_per_epoch=5,
+#                                           last_epoch=last_epoch_for_scheduler)
 threshold = 0.88  # tile 的分类阈值，根据经验设定
 
 # data setup
@@ -104,10 +108,10 @@ trans = transforms.Compose([transforms.ToTensor(), normalize])
 # trans = transforms.ToTensor()
 
 print("Training settings: ")
-print("""Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | 
+print("""Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | learning rate: {} |
 Tile batch size: {} | Image batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"""
     .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
-    args.encoder, args.epochs, args.test_every, args.tile_batch_size, args.image_batch_size,
+    args.encoder, args.epochs, args.test_every, args.lr, args.tile_batch_size, args.image_batch_size,
     args.tile_size, args.interval, args.topk_neg))
 
 print('Loading Dataset ...')
@@ -135,7 +139,7 @@ val_loader_image = DataLoader(valset, batch_size=args.image_batch_size, shuffle=
 
 
 def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, crit_cls, crit_reg, crit_seg,
-          optimizer, threshold, tiles_per_pos, topk_neg, output_path):
+          optimizer, scheduler, threshold, tiles_per_pos, topk_neg, output_path):
     """one training epoch = tile mode -> image mode
 
     :param tile_only:       是否只训练实例分支
@@ -148,6 +152,7 @@ def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, c
     :param crit_reg:        回归损失函数
     :param crit_seg:        分割损失函数
     :param optimizer:       优化器
+    :param scheduler:       学习率调度器
     :param threshold:       验证模型所用的置信度
     :param tiles_per_pos:   在**单个阳性细胞**上选取的图像块数 (topk_pos = tiles_per_pos * label)
     :param topk_neg:        每次在阴性细胞图像上选取的 top-k tile **总数**
@@ -210,7 +215,8 @@ def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, c
                         'epoch': epoch,
                         'state_dict': model.state_dict(),
                         'encoder': model.encoder_name,
-                        'optimizer': optimizer.state_dict()
+                        'optimizer': optimizer.state_dict(),
+                        # 'scheduler': scheduler.state_dict()
                     }
                     torch.save(obj, os.path.join(output_path, 'checkpoint_{}epochs_tileonly.pth'.format(epoch)))
 
@@ -224,7 +230,7 @@ def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, c
                 gamma = 0.9
                 delta = 0.1
                 loss = train_alternative(train_loader_backward_image, epoch, total_epochs, mini_epochs, model, crit_cls,
-                                         crit_reg, crit_seg, optimizer, threshold, alpha, beta, gamma, delta)
+                                         crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
 
                 print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | image seg loss: {:.4f} | image loss: {:.4f}"
                       .format(*loss))
@@ -280,7 +286,8 @@ def train(tile_only, total_epochs, last_epoch, mini_epochs, test_every, model, c
                         'epoch': epoch,
                         'state_dict': model.state_dict(),
                         'encoder': model.encoder_name,
-                        'optimizer': optimizer.state_dict()
+                        'optimizer': optimizer.state_dict(),
+                        # 'scheduler': scheduler.state_dict()
                     }
                     torch.save(obj, os.path.join(output_path, 'checkpoint_{}epochs.pth'.format(epoch)))
 
@@ -397,7 +404,7 @@ def train_tile(loader, epoch, total_epochs, model, criterion, optimizer):
 
 
 def train_alternative(loader, epoch, total_epochs, mini_epochs, model, crit_cls, crit_reg, crit_seg, optimizer,
-                      threshold, alpha, beta, gamma, delta):
+                      scheduler, threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
     :param loader:          训练集的迭代器
@@ -409,6 +416,7 @@ def train_alternative(loader, epoch, total_epochs, mini_epochs, model, crit_cls,
     :param crit_reg:        回归损失函数
     :param crit_seg:        分割损失函数
     :param optimizer:       优化器
+    :param scheduler:       学习率调度器
     :param alpha:           tile_loss 系数
     :param beta:            image_cls_loss 系数
     :param gamma:           image_reg_loss 系数
@@ -467,6 +475,7 @@ def train_alternative(loader, epoch, total_epochs, mini_epochs, model, crit_cls,
         image_loss_i = beta * image_cls_loss_i + gamma * image_reg_loss_i
         image_loss_i.backward()
         optimizer.step()
+        # scheduler.step()
 
         image_cls_loss += image_cls_loss_i.item() * data[0].size(0)
         image_reg_loss += image_reg_loss_i.item() * data[0].size(0)

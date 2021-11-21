@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 
-import model.resnet as models
+import model.mil_resnet as models
 
 now = int(time.time())
 
@@ -47,7 +47,7 @@ if not os.path.exists(args.output):
     os.mkdir(args.output)
 
 model = models.encoders[torch.load(args.model)['encoder']]
-model.fc_tile = nn.Linear(model.fc_tile.in_features, 2)
+model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 epoch = torch.load(args.model)['epoch']
 model.load_state_dict(torch.load(args.model)['state_dict'])
 
