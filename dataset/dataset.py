@@ -199,10 +199,8 @@ class LystoDataset(Dataset):
             return len(self.images)
         elif self.mode == 3:
             return len(self.train_data)
-        elif self.mode == 4 or self.mode == 5:
-            return len(self.labels)
         else:
-            raise Exception("Something wrong in setmode.")
+            return len(self.labels)
 
 
 class LystoTestset(Dataset):

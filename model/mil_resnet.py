@@ -293,9 +293,3 @@ def MILresnet50(pretrained=False, **kwargs):
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)
     return model
-
-encoders = {
-    'resnet18': MILresnet18(pretrained=True),
-    'resnet34': MILresnet34(pretrained=True),
-    'resnet50': MILresnet50(pretrained=True)
-}

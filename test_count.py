@@ -4,16 +4,13 @@ import argparse
 import time
 from tqdm import tqdm
 import csv
-import cv2
-from PIL import Image
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-import torch.nn.functional as F
 import torchvision.transforms as transforms
 
-import model.mil_resnet as models
+from model import encoders
 
 now = int(time.time())
 
@@ -25,7 +22,6 @@ parser.add_argument('-w', '--workers', default=4, type=int, help='number of data
 parser.add_argument('-d', '--device', type=int, default=0, help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now),
                     help='path of output details .csv file (default: ./output/<timestamp>)')
-
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -40,20 +36,20 @@ print("Model: {} | Image batch size: {} | Output directory: {}"
 if not os.path.exists(args.output):
     os.mkdir(args.output)
 
-model = models.encoders[torch.load(args.model)['encoder']]
+f = torch.load(args.model)
+model = encoders[f['encoder']]
 model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
-epoch = torch.load(args.model)['epoch']
-model.load_state_dict(torch.load(args.model)['state_dict'])
+epoch = f['epoch']
+model.load_state_dict(f['state_dict'])
 
 normalize = transforms.Normalize(
     mean=[0.485, 0.456, 0.406],
     std=[0.229, 0.224, 0.225]
 )
 trans = transforms.Compose([transforms.ToTensor(), normalize])
-# trans = transforms.ToTensor()
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu", args.device)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
 model.to(device)
 
 
@@ -67,36 +63,30 @@ def test_count(testset, batch_size, workers, output_path):
     w = csv.writer(fconv, delimiter=',')
     w.writerow(['id', 'count'])
 
+    def predict_counts(loader, model, device):
+        """预测测试集图片中阳性细胞的数目。"""
+
+        model.setmode("image")
+        model.eval()
+
+        output = np.array([])
+
+        with torch.no_grad():
+            image_bar = tqdm(loader, desc="cell counting")
+            for input in image_bar:
+                output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
+
+        # print("output.size = ", output.shape)
+        return np.round(output).astype(int)
+
     print('Start testing ...')
 
     testset.setmode("count")
-    output = predict_counts(test_loader)
+    output = predict_counts(test_loader, model, device)
     for i, count in enumerate(output, start=1):
         w.writerow([i, count])
 
     fconv.close()
-
-
-def predict_counts(loader):
-    """前馈推导一次模型，获取实例分类概率。
-
-    :param loader:          训练集的迭代器
-    :param batch_size:      DataLoader 打包的小 batch 大小
-    """
-    global device, model
-
-    model.setmode("image")
-    model.eval()
-
-    output = np.array([])
-
-    with torch.no_grad():
-        image_bar = tqdm(loader, desc="cell counting")
-        for input in image_bar:
-            output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
-
-    # print("output.size = ", output.shape)
-    return np.round(output).astype(int)
 
 
 if __name__ == "__main__":

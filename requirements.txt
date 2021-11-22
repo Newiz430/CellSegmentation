@@ -7,5 +7,4 @@ tqdm==4.50.2
 torchsummary==1.5.1
 numpy==1.19.2
 Pillow==8.3.1
-scikit-learn==0.24.2
 openslide-python==1.1.2
