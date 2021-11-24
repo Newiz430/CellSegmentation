@@ -57,11 +57,13 @@ model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 epoch = f['epoch']
 model.load_state_dict(f['state_dict'])
 
-normalize = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225]
-)
-trans = transforms.Compose([transforms.ToTensor(), normalize])
+trans = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
@@ -122,7 +124,7 @@ def test_tile(testset, batch_size, workers, output_path):
 
 
 if __name__ == "__main__":
-    from dataset.dataset import LystoTestset
+    from dataset import LystoTestset
 
     print('Loading Dataset ...')
     imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans, tile_size=args.tile_size,

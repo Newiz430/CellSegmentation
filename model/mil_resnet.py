@@ -106,7 +106,7 @@ class MILResNet(nn.Module):
         self.maxpool_image = nn.AdaptiveMaxPool2d((self.map_size, self.map_size))
         self.fc_image_cls = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 2)
+            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 7)
         )
         # 回归层参考了 AlexNet 的结构（弃用）
         self.fc_image_reg_old1 = nn.Sequential(
@@ -133,7 +133,8 @@ class MILResNet(nn.Module):
             nn.Linear(512 * self.map_size * self.map_size * block.expansion, 64),
             nn.BatchNorm1d(64),
             nn.Dropout(),
-            nn.Linear(64, 1)
+            nn.Linear(64, 1),
+            nn.ReLU(inplace=True)
         )
 
         self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
@@ -228,7 +229,7 @@ class MILResNet(nn.Module):
 
             # image_cls & image_reg
             out = self.avgpool_image(x4) + self.maxpool_image(x4)  # [n, 512, ?, ?]
-            out_cls = self.fc_image_cls(out)  # [n, 2]
+            out_cls = self.fc_image_cls(out)  # [n, 7]
             out_reg = self.fc_image_reg(out)  # [n, 1]
 
             return out_cls, out_reg

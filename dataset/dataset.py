@@ -1,3 +1,5 @@
+import sys
+
 import h5py
 import random
 import numpy as np
@@ -36,8 +38,9 @@ class LystoDataset(Dataset):
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
-        self.tileIDX = []         # 每个 tile 对应的图像编号，array ( 20000 * n )
-        self.tiles_grid = []      # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
+        self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签
+        self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
+        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -55,6 +58,8 @@ class LystoDataset(Dataset):
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
+            cls_label = categorize(label)
+            self.cls_labels.append(cls_label)
 
             if self.interval is not None and self.tile_size is not None:
 
@@ -75,8 +80,7 @@ class LystoDataset(Dataset):
     #     self.visualize = True
 
     def make_train_data(self, idxs):
-        # 用于 mode 2，制作训练用数据集
-        # 当 tile 对应的切片的 label 为 n 时标签为 1 ，否则为 0
+        # 制作 tile mode 训练用数据集，当 tile 对应的图像的 label 为 n 时标签为 1 ，否则为 0
         self.train_data = [(self.tileIDX[i], self.tiles_grid[i],
                            0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs]
         # if shuffle:
@@ -111,7 +115,8 @@ class LystoDataset(Dataset):
 
             # Get images
             image = self.images[idx]
-            label_cls = 0 if self.labels[idx] == 0 else 1
+            # label_cls = 0 if self.labels[idx] == 0 else 1
+            label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
             # if self.visualize:
@@ -167,7 +172,8 @@ class LystoDataset(Dataset):
         # image validating mode
         elif self.mode == 4:
             image = self.images[idx]
-            label_cls = 0 if self.labels[idx] == 0 else 1
+            # label_cls = 0 if self.labels[idx] == 0 else 1
+            label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
             if self.transform is not None:
@@ -177,7 +183,8 @@ class LystoDataset(Dataset):
         # image-only training mode
         elif self.mode == 5:
             image = self.images[idx]
-            label_cls = 0 if self.labels[idx] == 0 else 1
+            # label_cls = 0 if self.labels[idx] == 0 else 1
+            label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
             if self.transform is not None:
@@ -185,10 +192,8 @@ class LystoDataset(Dataset):
             # for image-only training, images need to be unsqueezed
             return image.unsqueeze(0), label_cls, label_reg
 
-
         else:
             raise Exception("Something wrong in setmode.")
-
 
     def __len__(self):
 
@@ -241,7 +246,7 @@ class LystoTestset(Dataset):
             if self.interval is not None and self.tile_size is not None:
 
                 t = get_tiles(img, self.interval, self.tile_size)
-                self.tiles_grid.extend(t) # 获取 tile
+                self.tiles_grid.extend(t)
                 self.tileIDX.extend([tileIDX] * len(t))
 
         self.image_size = self.images[0].shape[0:2]
@@ -254,7 +259,6 @@ class LystoTestset(Dataset):
     def __getitem__(self, idx):
         # test_tile
         if self.mode == "tile":
-
             assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
 
             # organ = self.organs[idx]
@@ -267,7 +271,6 @@ class LystoTestset(Dataset):
 
         # test_count
         elif self.mode == "count":
-
             image = self.images[idx]
             if self.transform is not None:
                 image = self.transform(image)
@@ -308,6 +311,42 @@ def get_tiles(image, interval, size):
 
     return tiles
 
+
+def categorize(x):
+    """按 LYSTO 划分的 7 个细胞数目类别划分分类标签。"""
+    if x == 0:
+        label = 0
+    elif x <= 5:
+        label = 1
+    elif x <= 10:
+        label = 2
+    elif x <= 20:
+        label = 3
+    elif x <= 50:
+        label = 4
+    elif x <= 200:
+        label = 5
+    else:
+        label = 6
+    return label
+
+def de_categorize(label):
+    """给出每个 label 对应的范围。"""
+    if label == 0:
+        xmin, xmax = 0, 0
+    elif label == 1:
+        xmin, xmax = 1, 5
+    elif label == 2:
+        xmin, xmax = 6, 10
+    elif label == 3:
+        xmin, xmax = 11, 20
+    elif label == 4:
+        xmin, xmax = 21, 50
+    elif label == 5:
+        xmin, xmax = 51, 200
+    else:
+        xmin, xmax = 201, 100000
+    return xmin, xmax
 
 if __name__ == '__main__':
 

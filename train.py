@@ -15,7 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import save_image
 
-from dataset.dataset import LystoDataset
+from dataset import LystoDataset
 from model import encoders
 from inference import *
 from train import *
@@ -80,18 +80,29 @@ verbose = True
 now = int(time.time())
 
 # data setup
-normalize = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225]
-)
-trans = transforms.Compose([transforms.ToTensor(), normalize])
+trans = transforms.Compose([
+    # transforms.ColorJitter(),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
 
+if args.tile_only or args.image_only:
+    single_branch = 'tile_only' if args.tile_only else 'image_only'
+else:
+    single_branch = 'tile+image'
 print("Training settings: ")
-print("""Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | Initial LR: {} |
-Tile batch size: {} | Image batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"""
-    .format("tile" if args.tile_only else "tile + image", 'GPU' if torch.cuda.is_available() else 'CPU',
-    args.encoder, args.epochs, args.test_every, args.lr, args.tile_batch_size, args.image_batch_size,
-    args.tile_size, args.interval, args.topk_neg))
+print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | Initial LR: {} | "
+      .format(single_branch, 'GPU' if torch.cuda.is_available() else 'CPU',
+              args.encoder, args.epochs, args.test_every, args.lr))
+if not args.image_only:
+    print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"
+          .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
+if not args.tile_only:
+    print("Image batch size: {} |".format(args.image_batch_size))
+
 
 print('Loading Dataset ...')
 trainset = LystoDataset(filepath="data/training.h5", transform=trans, tile_size=args.tile_size,
@@ -123,6 +134,7 @@ model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 
 crit_cls = nn.CrossEntropyLoss()
 crit_reg = nn.MSELoss()
+# crit_reg = WeightedMSELoss()
 crit_seg = None # TODO: CE?
 last_epoch = 0
 last_epoch_for_scheduler = -1
@@ -145,9 +157,15 @@ if args.resume:
     last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
     model.load_state_dict(checkpoint['state_dict'])
 
-optimizer = optim.Adam([{'params': model.parameters(),
+optimizers = {
+    'SGD': optim.SGD([{'params': model.parameters(),
+                       'initial_lr': args.lr
+                       }], lr=args.lr, momentum=0.9, weight_decay=1e-4),
+    'Adam': optim.Adam([{'params': model.parameters(),
                          'initial_lr': args.lr
                          }], lr=args.lr, weight_decay=1e-4)
+}
+optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
 if args.resume:
     optimizer.load_state_dict(checkpoint['optimizer'])
 schedulers = {
@@ -157,11 +175,14 @@ schedulers = {
     # note that last_epoch means last iteration number here
     'ExponentialLR': ExponentialLR(optimizer, gamma=0.9, last_epoch=last_epoch_for_scheduler),
     'CosineAnnealingWarmRestarts': CosineAnnealingWarmRestarts(optimizer, T_0=5,
-                                                               last_epoch=last_epoch_for_scheduler)
+                                                               last_epoch=last_epoch_for_scheduler),
 }
-scheduler = schedulers[args.scheduler]
-if args.resume:
-    scheduler.load_state_dict(checkpoint['scheduler'])
+if args.scheduler is not None:
+    scheduler = schedulers[args.scheduler]
+    if args.resume:
+        scheduler.load_state_dict(checkpoint['scheduler'])
+else:
+    scheduler = None
 
 
 def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, model, crit_cls, crit_reg, crit_seg,
@@ -193,7 +214,7 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
     fconv.close()
     # 训练结果保存在 output_path/<timestamp>-training.csv
     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
-    fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_error,image_fpr,image_fnr,mse,qwk\n')
+    fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_map,mse,qwk\n')
     fconv.close()
     # 验证结果保存在 output_path/<timestamp>-validation.csv
 
@@ -203,13 +224,13 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
     with SummaryWriter() as writer:
         for epoch in range(1 + last_epoch, total_epochs + 1):
 
-            # Forwarding step
-            trainset.setmode(1)
-            probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
-            sample(trainset, probs, tiles_per_pos, topk_neg)
-
             # Training tile-mode only
             if single_branch == 'tile_only':
+                # Forwarding step
+                trainset.setmode(1)
+                probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
+                sample(trainset, probs, tiles_per_pos, topk_neg)
+
                 trainset.setmode(3)
                 loss = train_tile(train_loader_backward_tile, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler)
                 print("tile loss: {:.4f}".format(loss))
@@ -239,8 +260,8 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
             # Training image-mode only
             elif single_branch == 'image_only':
                 trainset.setmode(5)
-                beta = 0.1
-                gamma = 0.9
+                beta = 1
+                gamma = 1
                 loss = train_image(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls, crit_reg,
                                    optimizer, scheduler, beta, gamma)
 
@@ -258,34 +279,39 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
 
                     # image validating
                     valset.setmode(4)
-                    probs_i, reg = inference_image(val_loader_image, model, device, epoch, total_epochs)
+                    categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
 
                     regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
                         now, epoch)), 'w', newline="")
                     w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'count'])
-                    for i, count in enumerate(reg, start=1):
-                        w.writerow([i, count])
+                    w.writerow(['id', 'label', 'count', 'loss'])
+                    for i, count in enumerate(counts):
+                        w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
                     regconv.close()
 
-                    metrics_i = validation_image(valset, probs_i, reg)
-                    print('image error: {} | image FPR: {} | image FNR: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
+                    metrics_i = validation_image(valset, categories, counts)
+                    print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{},{},{}\n'.format(epoch, *metrics_i))
+                    fconv.write('{},{},{},{}\n'.format(epoch, *metrics_i))
                     fconv.close()
 
                     add_scalar_metrics(writer, epoch, metrics_i, 'image')
                     # 每验证一次，保存模型
                     save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
 
-            # Alternative training step
+            # Alternative training
             else:
+                # Forwarding step
+                trainset.setmode(1)
+                probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
+                sample(trainset, probs, tiles_per_pos, topk_neg)
+
                 trainset.setmode(2)
                 # if epoch == total_epochs:
                 #     trainset.visualize_bboxes()  # tile visualize testing
-                alpha = 1.
-                beta = 0.1
-                gamma = 0.9
+                alpha = 1
+                beta = 1
+                gamma = 1
                 delta = 0.1
                 loss = train_alternative(train_loader_backward_image, epoch, total_epochs, mini_epochs, model, device, crit_cls,
                                          crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
@@ -309,20 +335,20 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
 
                     # image validating
                     valset.setmode(4)
-                    probs_i, reg = inference_image(val_loader_image, model, device, epoch, total_epochs)
+                    categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
 
                     regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
                         now, epoch)), 'w', newline="")
                     w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'count'])
-                    for i, count in enumerate(reg, start=1):
-                        w.writerow([i, count])
+                    w.writerow(['id', 'label', 'count', 'loss'])
+                    for i, count in enumerate(counts):
+                        w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
                     regconv.close()
 
-                    metrics_i = validation_image(valset, probs_i, reg)
-                    print('image error: {} | image FPR: {} | image FNR: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
+                    metrics_i = validation_image(valset, categories, counts)
+                    print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
+                    fconv.write('{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
                     fconv.close()
 
                     add_scalar_metrics(writer, epoch, metrics_t, 'tile')
@@ -340,7 +366,7 @@ def save_model(single_branch, epoch, model, optimizer, scheduler, output_path):
         'state_dict': model.state_dict(),
         'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
-        'scheduler': scheduler.state_dict()
+        'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
     if single_branch is None:
         single_branch = ''
@@ -350,6 +376,8 @@ def save_model(single_branch, epoch, model, optimizer, scheduler, output_path):
 
 
 def add_scalar_loss(writer, epoch, losses, mode):
+
+    losses = list(losses)
 
     if 'tile' in mode:
         writer.add_scalar("tile loss", losses.pop(0), epoch)
@@ -367,6 +395,8 @@ def add_scalar_loss(writer, epoch, losses, mode):
 
 def add_scalar_metrics(writer, epoch, metrics, mode):
 
+    metrics = list(metrics)
+
     if mode == 'tile':
         assert len(metrics) == 3, "Tile metrics should include 3 items: error rate, FPR and FNR. "
         writer.add_scalar('tile error rate', metrics[0], epoch)
@@ -374,20 +404,13 @@ def add_scalar_metrics(writer, epoch, metrics, mode):
         writer.add_scalar('tile false negative rate', metrics[2], epoch)
 
     else: # mode == 'image'
-        assert len(metrics) == 5, "Image metrics should include 5 items: error rate, FPR, FNR, MSE and QWK. "
-        writer.add_scalar('image error rate', metrics[0], epoch)
-        writer.add_scalar('image false positive rate', metrics[1], epoch)
-        writer.add_scalar('image false negative rate', metrics[2], epoch)
-        writer.add_scalar('image mse', metrics[3], epoch)
-        writer.add_scalar('image qwk', metrics[4], epoch)
+        assert len(metrics) == 3, "Image metrics should include 3 items: mAP, MSE and QWK. "
+        writer.add_scalar('image map', metrics[0], epoch)
+        writer.add_scalar('image mse', metrics[1], epoch)
+        writer.add_scalar('image qwk', metrics[2], epoch)
 
 
 if __name__ == "__main__":
-
-    if args.tile_only or args.image_only:
-        single_branch = 'tile_only' if args.tile_only else ''
-    else:
-        single_branch = None
 
     train(single_branch=single_branch,
           total_epochs=args.epochs,

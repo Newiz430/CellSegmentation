@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
 from model import encoders
+from inference import inference_image
 
 now = int(time.time())
 
@@ -42,11 +43,13 @@ model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 epoch = f['epoch']
 model.load_state_dict(f['state_dict'])
 
-normalize = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225]
-)
-trans = transforms.Compose([transforms.ToTensor(), normalize])
+trans = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
@@ -63,26 +66,26 @@ def test_count(testset, batch_size, workers, output_path):
     w = csv.writer(fconv, delimiter=',')
     w.writerow(['id', 'count'])
 
-    def predict_counts(loader, model, device):
-        """预测测试集图片中阳性细胞的数目。"""
-
-        model.setmode("image")
-        model.eval()
-
-        output = np.array([])
-
-        with torch.no_grad():
-            image_bar = tqdm(loader, desc="cell counting")
-            for input in image_bar:
-                output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
-
-        # print("output.size = ", output.shape)
-        return np.round(output).astype(int)
+    # def predict_counts(loader, model, device):
+    #     """预测测试集图片中阳性细胞的数目。"""
+    #
+    #     model.setmode("image")
+    #     model.eval()
+    #
+    #     output = np.array([])
+    #
+    #     with torch.no_grad():
+    #         image_bar = tqdm(loader, desc="cell counting")
+    #         for input in image_bar:
+    #             output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
+    #
+    #     # print("output.size = ", output.shape)
+    #     return np.round(output).astype(int)
 
     print('Start testing ...')
 
     testset.setmode("count")
-    output = predict_counts(test_loader, model, device)
+    output = inference_image(test_loader, model, device, mode='test')[1]
     for i, count in enumerate(output, start=1):
         w.writerow([i, count])
 
@@ -90,7 +93,7 @@ def test_count(testset, batch_size, workers, output_path):
 
 
 if __name__ == "__main__":
-    from dataset.dataset import LystoTestset
+    from dataset import LystoTestset
 
     print('Loading Dataset ...')
     imageSet_test = LystoTestset(filepath="data/test.h5", transform=trans)

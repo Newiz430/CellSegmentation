@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from metrics import calc_err, qwk
+from metrics import calc_err, calc_map, qwk
+from train import weighted_mse_loss
 
 def validation_tile(valset, probs, tiles_per_pos, threshold):
     """tile mode 的验证"""
@@ -25,15 +26,15 @@ def validation_tile(valset, probs, tiles_per_pos, threshold):
     err, fpr, fnr = calc_err(val_index, labels)
     return err, fpr, fnr
 
-def validation_image(valset, probs, reg):
-    """image mode 的验证"""
 
-    # probs = np.round(probs)  # go soft?
-    # TODO: is it necessary to validate image classification?
-    # err, fpr, fnr = calc_err(probs, np.sign(valset.labels))
-    err = fpr = fnr = 0
-    mse = F.mse_loss(torch.from_numpy(reg), torch.tensor(valset.labels))
-    score = qwk(np.round(reg), valset.labels) * 100
+def validation_image(valset, categories, counts):
+    """image mode 的验证，probs 应为二维数组，第二维的大小为 7。"""
 
-    return err, fpr, fnr, mse.item(), score
+    # map = calc_map(F.one_hot(torch.tensor(categories), num_classes=7).numpy(),
+    #                F.one_hot(torch.tensor(valset.cls_labels), num_classes=7).numpy())
+    map = 0
+    mse = F.mse_loss(torch.from_numpy(counts), torch.tensor(valset.labels))
+    score = qwk(counts, valset.labels) * 100
+
+    return map, mse.item(), score
 

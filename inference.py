@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from dataset import categorize, de_categorize
 
 def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='train'):
     """前馈推导一次模型，获取实例分类概率。"""
@@ -42,21 +43,43 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
     print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def inference_image(loader, model, device, epoch, total_epochs):
-    """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
+def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train'):
+    """前馈推导一次模型，获取图像级的分类概率和回归预测值以及两者的整型版本。"""
 
     model.setmode("image")
     model.eval()
 
-    probs = torch.tensor(())
-    nums = torch.tensor(())
+    # probs = torch.tensor(())
+    # nums = torch.tensor(())
+    categories = np.array(())
+    counts = np.array(())
     with torch.no_grad():
         image_bar = tqdm(loader, desc="image forwarding")
-        image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
-        for i, (data, label_cls, label_num) in enumerate(image_bar):
+        if epoch is not None and total_epochs is not None:
+            image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+        for i, data in enumerate(image_bar):
+            if mode == 'train':
+                data = data[0]
             output = model(data.to(device))
             output_cls = F.softmax(output[0], dim=1)
-            probs = torch.cat((probs, output_cls.detach()[:, 1].clone().cpu()), dim=0)
-            nums = torch.cat((nums, output[1].detach()[:, 0].clone().cpu()), dim=0)
+            output_cls = output_cls.detach().clone().cpu()
+            output_reg = output[1].detach()[:, 0].clone().cpu()
 
-    return probs.numpy(), nums.numpy()
+            # probs = torch.cat((probs, output_cls), dim=0)  # probs: [len(dataset), 7]
+            # nums = torch.cat((nums, output_reg), dim=0)  # nums: [len(dataset)]
+
+            output_cls = np.round(output_cls.numpy()).astype(int)
+            output_reg = np.round(output_reg.numpy()).astype(int)
+            cat_labels = np.argmax(output_cls, axis=1)
+
+            for i, x in enumerate(output_reg):
+                if categorize(x) > cat_labels[i]:
+                    output_reg[i] = de_categorize(cat_labels[i])[1]
+                elif categorize(x) < cat_labels[i]:
+                    output_reg[i] = de_categorize(cat_labels[i])[0]
+
+            categories = np.concatenate((categories, cat_labels))
+            counts = np.concatenate((counts, output_reg))
+
+    # return probs.numpy(), nums.numpy()
+    return categories, counts

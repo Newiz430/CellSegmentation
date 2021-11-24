@@ -20,10 +20,11 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
     if not os.path.exists(output_path):
         os.mkdir(output_path)
 
-    for i, img in enumerate(dataset.images):
+    bar = tqdm(dataset.images)
+    for i, img in enumerate(bar):
         if num_of_imgs != 0 and i == num_of_imgs:
             break
-        name = '{}_{}_{}cells.png'.format(prefix, i, dataset.labels[i]) if hasattr(dataset, 'labels') \
+        name = '{}_{}_{}cells.png'.format(prefix, i + 1, dataset.labels[i]) if hasattr(dataset, 'labels') \
             else '{}_{}.png'.format(prefix, i)
         Image.fromarray(np.uint8(img)).save(os.path.join(output_path, name))
 
@@ -163,10 +164,10 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 
 
 if __name__ == "__main__":
-    from dataset.dataset import LystoDataset, LystoTestset
+    from dataset import LystoDataset, LystoTestset
 
     # imageSet_test = LystoTestset(filepath="data/test.h5")
     # save_images(imageSet_test, 'test', './data/test')
 
-    set = LystoDataset(filepath="data/training.h5", train=False)
-    save_images(set, 'val', './data/val')
+    set = LystoDataset(filepath="data/training.h5")
+    save_images(set, 'train', './data/train')

@@ -7,6 +7,7 @@ from torch.optim.lr_scheduler import *
 
 from save_images import generate_masks
 
+
 def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler):
     """Tile training for one epoch.
 
@@ -18,6 +19,7 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
     :param optimizer:       优化器
     """
 
+    # tile training, dataset.mode = 3
     model.train()
 
     tile_num = 0
@@ -59,6 +61,10 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     :param gamma:           image_reg_loss 系数
     """
 
+    # image training, dataset.mode = 5
+    model.setmode("image")
+    model.train()
+
     image_cls_loss = 0.
     image_reg_loss = 0.
     image_loss = 0.
@@ -67,15 +73,15 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (data, label_cls, label_num) in enumerate(train_bar):
 
-        # pt.2: image training
-        model.setmode("image")
-        model.train()
         output = model(data.to(device))
 
         optimizer.zero_grad()
 
         image_cls_loss_i = crit_cls(output[0], label_cls.to(device))
-        image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
+        # image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
+        # For weighted MSE
+        image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32),
+                                    label_cls.to(device, dtype=torch.float32))
 
         # total_loss_i = alpha * tile_loss_i + beta * image_cls_loss_i + \
         #                gamma * image_reg_loss_i + delta * image_seg_loss_i
@@ -123,6 +129,8 @@ def train_alternative(loader, epoch, total_epochs, mini_epochs, model, device, c
     :param delta:           image_seg_loss 系数
     """
 
+    # alternative training, dataset.mode = 2
+
     tile_num = 0
     tile_loss = 0.
     image_cls_loss = 0.
@@ -159,7 +167,10 @@ def train_alternative(loader, epoch, total_epochs, mini_epochs, model, device, c
         optimizer.zero_grad()
 
         image_cls_loss_i = crit_cls(output[0], labels[0].to(device))
-        image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32))
+        # image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32))
+        # For weighted MSE
+        image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32),
+                                    labels[0].to(device, dtype=torch.float32))
         # image_seg_loss_i = crit_seg(output[?], labels[?].to(device))
 
         # total_loss_i = alpha * tile_loss_i + beta * image_cls_loss_i + \
