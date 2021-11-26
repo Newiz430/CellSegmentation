@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from dataset import categorize
-
 
 class MSELoss(nn.Module):
 
@@ -34,7 +32,6 @@ class WeightedMSELoss(nn.Module):
 def weighted_mse_loss(inputs, targets, weights, reduction='mean'):
     assert reduction in ('mean', 'sum'), "\'reduction\' must be one of (\'mean\', \'sum\'). "
 
-    # weights = torch.exp(weights) / torch.sum(weights)
     # 2 ** (w - 1) to map categories-[0, 1, 2, 3, 4, 5, 6] to weights-[.5, 1, 2, 4, 8, 16, 32]
     tmp = 2 ** (weights - 1) * (inputs - targets) ** 2
     return torch.mean(tmp) if reduction == 'mean' else torch.sum(tmp)

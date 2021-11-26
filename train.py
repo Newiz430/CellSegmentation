@@ -8,7 +8,6 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 import torch.distributed as dist
-import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import *
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -48,7 +47,7 @@ parser.add_argument('-w', '--workers', default=4, type=int,
 parser.add_argument('-m', '--mini_epochs', default=5, type=int,
                     help='number of mini-epochs per epoch (default: 5)')
 parser.add_argument('--test_every', default=1, type=int,
-                    help='validate every (default: 1) epoch(s)')
+                    help='validate every (default: 1) epoch(s). To use all data for training, set this greater than --epochs')
 parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
                     help='k tiles are from a single positive cell (default: 1, standard MIL)')
 parser.add_argument('-n', '--topk_neg', default=30, type=int,
@@ -80,23 +79,16 @@ verbose = True
 now = int(time.time())
 
 # data setup
-trans = transforms.Compose([
-    # transforms.ColorJitter(),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
-
 if args.tile_only or args.image_only:
     single_branch = 'tile_only' if args.tile_only else 'image_only'
 else:
     single_branch = 'tile+image'
 print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | Validate every {} epoch(s) | Initial LR: {} | "
+print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | "
       .format(single_branch, 'GPU' if torch.cuda.is_available() else 'CPU',
-              args.encoder, args.epochs, args.test_every, args.lr))
+              args.encoder, args.epochs,
+              'Validate every {} epoch(s)'.format(args.test_every) if args.test_every <= args.epochs else 'No validation',
+              args.lr))
 if not args.image_only:
     print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"
           .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
@@ -105,21 +97,20 @@ if not args.tile_only:
 
 
 print('Loading Dataset ...')
-trainset = LystoDataset(filepath="data/training.h5", transform=trans, tile_size=args.tile_size,
-                        interval=args.interval, num_of_imgs=0)
-valset = LystoDataset(filepath="data/training.h5", transform=trans, tile_size=args.tile_size,
-                      interval=args.interval, train=False)
+kfold = None if args.test_every > args.epochs else 10
+trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold, num_of_imgs=0)
+valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False, kfold=kfold)
 
-# shuffle 只能是 False
+# shuffle 只能是 False ？为什么？
 collate_fn = default_collate
 # TODO: how can I split the training step for distributed parallel training?
 train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=False,
+train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
+train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
                                          num_workers=args.workers, sampler=train_sampler, pin_memory=True,
                                          collate_fn=collate_fn)
 val_loader_tile = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
@@ -213,13 +204,15 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
     fconv.write('epoch,tile_loss,image_cls_loss,image_reg_loss,image_seg_loss,total_loss\n')
     fconv.close()
     # 训练结果保存在 output_path/<timestamp>-training.csv
-    fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
-    fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_map,mse,qwk\n')
-    fconv.close()
+    if test_every <= args.epochs:
+        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
+        fconv.write('epoch,tile_error,tile_fpr,tile_fnr,image_map,mse,qwk\n')
+        fconv.close()
     # 验证结果保存在 output_path/<timestamp>-validation.csv
 
     print('Start training ...'if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
+    validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
     with SummaryWriter() as writer:
         for epoch in range(1 + last_epoch, total_epochs + 1):
@@ -241,7 +234,7 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                 add_scalar_loss(writer, epoch, loss, ['tile'])
 
                 # Validating step
-                if (epoch + 1) % test_every == 0:
+                if validate(epoch, test_every):
                     valset.setmode(1)
                     print('Validating ...')
 
@@ -274,7 +267,7 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                 add_scalar_loss(writer, epoch, loss, ['image', 'total'])
 
                 # Validating step
-                if (epoch + 1) % test_every == 0:
+                if validate(epoch, test_every):
                     print('Validating ...')
 
                     # image validating
@@ -284,9 +277,9 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                     regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
                         now, epoch)), 'w', newline="")
                     w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'label', 'count', 'loss'])
+                    w.writerow(['id', 'organ', 'label', 'count', 'loss'])
                     for i, count in enumerate(counts):
-                        w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
+                        w.writerow([i + 1, valset.organs[i], valset.labels[i], count, count - valset.labels[i]])
                     regconv.close()
 
                     metrics_i = validation_image(valset, categories, counts)
@@ -325,7 +318,7 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                 add_scalar_loss(writer, epoch, loss, ['tile', 'image', 'seg', 'total'])
 
                 # Validating step
-                if (epoch + 1) % test_every == 0:
+                if validate(epoch, test_every):
                     valset.setmode(1)
                     print('Validating ...')
 

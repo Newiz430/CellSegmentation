@@ -12,6 +12,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
+from dataset import LystoTestset
 from model import encoders
 from inference import inference_tiles
 from save_images import heatmap
@@ -51,26 +52,23 @@ print("Model: {} | Tiles batch size: {} | Tile size: {} | Interval: {} | Thresho
 if not os.path.exists(args.output):
     os.mkdir(args.output)
 
+print('Loading Dataset ...')
+imageSet_test = LystoTestset("data/testing.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
+test_loader = DataLoader(imageSet_test, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+                         pin_memory=False)
+
 f = torch.load(args.model)
 model = encoders[f['encoder']]
 model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 epoch = f['epoch']
 model.load_state_dict(f['state_dict'])
 
-trans = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
-
 os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
 model.to(device)
 
 
-def test_tile(testset, batch_size, workers, output_path):
+def test_tile(testset, output_path):
     """
     :param testset:         测试数据集
     :param batch_size:      Dataloader 打包的小 batch 大小
@@ -80,8 +78,6 @@ def test_tile(testset, batch_size, workers, output_path):
     """
 
     global epoch, model
-
-    test_loader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False)
 
     # 热图中各个 tile 的信息保存在 output_path/<timestamp>-pred-<epoch>-<tilesize>-<interval>-<threshold>.csv
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
@@ -124,10 +120,5 @@ def test_tile(testset, batch_size, workers, output_path):
 
 
 if __name__ == "__main__":
-    from dataset import LystoTestset
 
-    print('Loading Dataset ...')
-    imageSet_test = LystoTestset(filepath="data/testing.h5", transform=trans, tile_size=args.tile_size,
-                                 interval=args.interval, num_of_imgs=20)
-
-    test_tile(imageSet_test, batch_size=args.batch_size, workers=args.workers, output_path=args.output)
+    test_tile(imageSet_test, output_path=args.output)

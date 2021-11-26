@@ -13,10 +13,9 @@ import torchvision.utils as utils
 
 class LystoDataset(Dataset):
 
-    def __init__(self, filepath, transform=None, tile_size=None, interval=None, train=True, kfold=10, num_of_imgs=0):
+    def __init__(self, filepath, tile_size=None, interval=None, train=True, augment=True, kfold=10, num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
-        :param transform:   数据预处理方式
         :param train:       训练集 / 验证集，默认为训练集
         :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
         :param interval:    选取 tile 的间隔步长
@@ -29,7 +28,7 @@ class LystoDataset(Dataset):
         else:
             raise Exception("Invalid data file.")
 
-        if kfold <= 0:
+        if kfold is not None and kfold <= 0:
             raise Exception("Invalid k-fold cross-validation argument.")
 
         self.train = train
@@ -39,10 +38,61 @@ class LystoDataset(Dataset):
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
         self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签
+        self.transformIDX = []      # 数据增强的类别，array (  )
         self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
         self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
+
+        augment_transforms = [
+            transforms.ColorJitter(),
+            transforms.Compose([
+                transforms.ColorJitter(),
+                transforms.RandomHorizontalFlip(p=1)
+            ]),
+            transforms.Compose([
+                transforms.ColorJitter(),
+                transforms.RandomVerticalFlip(p=1)
+            ]),
+            transforms.RandomHorizontalFlip(p=1),
+            transforms.RandomVerticalFlip(p=1),
+            transforms.Compose([
+                transforms.RandomHorizontalFlip(p=1),
+                transforms.RandomVerticalFlip(p=1)
+            ])
+        ]
+        self.transforms = [transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])] + [transforms.Compose([
+                transforms.ToTensor(),
+                augment,
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+        ]) for augment in augment_transforms]
+
+        def store_data(transidx=0):
+
+            nonlocal organ, img, label, tileIDX
+
+            self.organs.append(organ)
+            self.images.append(img)
+            self.labels.append(label)
+            cls_label = categorize(label)
+            self.cls_labels.append(cls_label)
+            self.transformIDX.append(transidx)
+
+            if self.interval is not None and self.tile_size is not None:
+                t = get_tiles(img, self.interval, self.tile_size)
+                self.tiles_grid.extend(t)  # 获取 tiles
+                self.tileIDX.extend([tileIDX] * len(t))  # 每个 tile 对应的 image 标签
+
+            return cls_label
 
         tileIDX = -1
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
@@ -51,27 +101,21 @@ class LystoDataset(Dataset):
             if num_of_imgs != 0 and i == num_of_imgs:
                 break
 
-            if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
-                continue
+            if self.kfold is not None:
+                if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
+                    continue
 
             tileIDX += 1
-            self.organs.append(organ)
-            self.images.append(img)
-            self.labels.append(label)
-            cls_label = categorize(label)
-            self.cls_labels.append(cls_label)
 
-            if self.interval is not None and self.tile_size is not None:
-
-                t = get_tiles(img, self.interval, self.tile_size)
-                self.tiles_grid.extend(t) # 获取 tiles
-                self.tileIDX.extend([tileIDX] * len(t)) # 每个 tile 对应的 image 标签
+            cls_label = store_data()
+            if self.train and augment:
+                for c in range(1, cls_label + 1):
+                    store_data(c)
 
         assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 
         self.image_size = self.images[0].shape[0:2]
         self.mode = None
-        self.transform = transform
 
     def setmode(self, mode):
         self.mode = mode
@@ -103,8 +147,7 @@ class LystoDataset(Dataset):
 
             (x, y) = self.tiles_grid[idx]
             tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
-            if self.transform is not None:
-                tile = self.transform(tile)
+            tile = self.transforms[self.transformIDX[self.tileIDX[idx]]](tile)
 
             label = self.labels[self.tileIDX[idx]]
             return tile, label
@@ -152,9 +195,8 @@ class LystoDataset(Dataset):
             #     utils.save_image(image, "test/img{}.png".format(idx))
             #     print("Image is saved.")
 
-            if self.transform is not None:
-                tiles = [self.transform(tile) for tile in tiles]
-                image = self.transform(image)
+            tiles = [self.transforms[self.transformIDX[self.tileIDX[idx]]](tile) for tile in tiles]
+            image = self.transforms[self.transformIDX[idx]](image)
 
             return (image.unsqueeze(0), torch.stack(tiles, dim=0)), \
                    (label_cls, label_reg, torch.tensor(tile_labels))
@@ -165,8 +207,7 @@ class LystoDataset(Dataset):
 
             tileIDX, (x, y), label = self.train_data[idx]
             tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
-            if self.transform is not None:
-                tile = self.transform(tile)
+            tile = self.transforms[self.transformIDX[self.tileIDX[idx]]](tile)
             return tile, label
 
         # image validating mode
@@ -176,8 +217,7 @@ class LystoDataset(Dataset):
             label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
-            if self.transform is not None:
-                image = self.transform(image)
+            image = self.transforms[self.transformIDX[idx]](image)
             return image, label_cls, label_reg
 
         # image-only training mode
@@ -187,8 +227,7 @@ class LystoDataset(Dataset):
             label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
-            if self.transform is not None:
-                image = self.transform(image)
+            image = self.transforms[self.transformIDX[idx]](image)
             # for image-only training, images need to be unsqueezed
             return image.unsqueeze(0), label_cls, label_reg
 
@@ -210,7 +249,7 @@ class LystoDataset(Dataset):
 
 class LystoTestset(Dataset):
 
-    def __init__(self, filepath, transform=None, tile_size=None, interval=None, num_of_imgs=0):
+    def __init__(self, filepath, tile_size=None, interval=None, num_of_imgs=0):
 
         """
         :param filepath:    hdf5数据文件路径
@@ -250,7 +289,13 @@ class LystoTestset(Dataset):
                 self.tileIDX.extend([tileIDX] * len(t))
 
         self.image_size = self.images[0].shape[0:2]
-        self.transform = transform
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
         self.mode = None
 
     def setmode(self, mode):
@@ -264,16 +309,14 @@ class LystoTestset(Dataset):
             # organ = self.organs[idx]
             (x, y) = self.tiles_grid[idx]
             tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
-            if self.transform is not None:
-                tile = self.transform(tile)
+            tile = self.transform(tile)
 
             return tile
 
         # test_count
         elif self.mode == "count":
             image = self.images[idx]
-            if self.transform is not None:
-                image = self.transform(image)
+            image = self.transform(image)
 
             return image
 
@@ -330,6 +373,7 @@ def categorize(x):
         label = 6
     return label
 
+
 def de_categorize(label):
     """给出每个 label 对应的范围。"""
     if label == 0:
@@ -348,21 +392,22 @@ def de_categorize(label):
         xmin, xmax = 201, 100000
     return xmin, xmax
 
+
 if __name__ == '__main__':
 
     batch_size = 2
-    imageSet = LystoDataset(filepath="data/training.h5", tile_size=32, interval=150, num_of_imgs=51)
-    imageSet_val = LystoDataset(filepath="data/training.h5", train=False, tile_size=32, interval=150, num_of_imgs=51)
+    imageSet = LystoDataset("data/training.h5", tile_size=32, interval=150, num_of_imgs=51)
+    imageSet_val = LystoDataset("data/training.h5", train=False, tile_size=32, interval=150, num_of_imgs=51)
     train_loader = DataLoader(imageSet, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(imageSet_val, batch_size=batch_size, shuffle=False)
 
     imageSet.setmode(1)
     imageSet_val.setmode(1)
     for idx, data in enumerate(train_loader):
-        print('Dry Run : [{}/{}]\r'.format(idx + 1, len(train_loader)))
+        print('Dry run : [{}/{}]\r'.format(idx + 1, len(train_loader)))
     print("Length of dataset: {}".format(len(train_loader.dataset)))
     for idx, data in enumerate(val_loader):
-        print('Dry Run : [{}/{}]\r'.format(idx + 1, len(val_loader)))
+        print('Dry run : [{}/{}]\r'.format(idx + 1, len(val_loader)))
     print("Length of dataset: {}".format(len(val_loader.dataset)))
 
     # 查看第一张图片

@@ -166,8 +166,8 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 if __name__ == "__main__":
     from dataset import LystoDataset, LystoTestset
 
-    # imageSet_test = LystoTestset(filepath="data/test.h5")
+    # imageSet_test = LystoTestset("data/test.h5")
     # save_images(imageSet_test, 'test', './data/test')
 
-    set = LystoDataset(filepath="data/training.h5")
+    set = LystoDataset("data/training.h5")
     save_images(set, 'train', './data/train')
