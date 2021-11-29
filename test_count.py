@@ -26,15 +26,9 @@ parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now),
                     help='path of output details .csv file (default: ./output/<timestamp>)')
 args = parser.parse_args()
 
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1)
-    print('\nGPU is available.\n')
-else:
-    torch.manual_seed(1)
-
 print("Testing settings: ")
-print("Model: {} | Image batch size: {} | Output directory: {}"
-      .format(args.model, args.image_batch_size, args.output))
+print("Device: {} | Model: {} | Image batch size: {} | Output directory: {}"
+      .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.image_batch_size, args.output))
 if not os.path.exists(args.output):
     os.mkdir(args.output)
 

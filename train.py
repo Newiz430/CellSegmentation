@@ -4,6 +4,7 @@ import argparse
 import time
 import csv
 
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -22,6 +23,7 @@ from validation import *
 from utils.collate import default_collate
 
 warnings.filterwarnings("ignore")
+now = int(time.time())
 
 # Training settings
 parser = argparse.ArgumentParser(prog="train.py", description='Training')
@@ -62,17 +64,17 @@ parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0, mutually exclusive with --distributed)')
-parser.add_argument('-o', '--output', type=str, default='checkpoint', metavar='OUTPUT/PATH',
-                    help='saving directory of output file (default: ./checkpoint)')
+parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(now), metavar='OUTPUT/PATH',
+                    help='saving directory of output file (default: ./checkpoint/<timestamp>)')
 parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
                     help='continue training from a checkpoint.pth')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
 
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1)
-else:
-    torch.manual_seed(1)
+# if torch.cuda.is_available():
+#     torch.cuda.manual_seed(1)
+# else:
+#     torch.manual_seed(1)
 
 max_acc = 0
 verbose = True
@@ -84,17 +86,18 @@ if args.tile_only or args.image_only:
 else:
     single_branch = 'tile+image'
 print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | "
+print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
       .format(single_branch, 'GPU' if torch.cuda.is_available() else 'CPU',
               args.encoder, args.epochs,
               'Validate every {} epoch(s)'.format(args.test_every) if args.test_every <= args.epochs else 'No validation',
-              args.lr))
+              args.lr, args.output))
 if not args.image_only:
     print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"
           .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
 if not args.tile_only:
     print("Image batch size: {} |".format(args.image_batch_size))
-
+if not os.path.exists(args.output):
+    os.mkdir(args.output)
 
 print('Loading Dataset ...')
 kfold = None if args.test_every > args.epochs else 10
@@ -106,11 +109,11 @@ collate_fn = default_collate
 # TODO: how can I split the training step for distributed parallel training?
 train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
+train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=False,
                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
+train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
+train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=False,
                                          num_workers=args.workers, sampler=train_sampler, pin_memory=True,
                                          collate_fn=collate_fn)
 val_loader_tile = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
@@ -247,8 +250,8 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                     fconv.close()
 
                     add_scalar_metrics(writer, epoch, metrics_t, 'tile')
-                    # 每验证一次，保存模型
-                    save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
+
+                save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
 
             # Training image-mode only
             elif single_branch == 'image_only':
@@ -277,9 +280,10 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                     regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
                         now, epoch)), 'w', newline="")
                     w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'organ', 'label', 'count', 'loss'])
+                    w.writerow(['id', 'organ', 'label', 'count', 'category', 'loss'])
                     for i, count in enumerate(counts):
-                        w.writerow([i + 1, valset.organs[i], valset.labels[i], count, count - valset.labels[i]])
+                        w.writerow([i + 1, valset.organs[i], valset.labels[i], count, valset.cls_labels[i],
+                                    np.abs(count - valset.labels[i])])
                     regconv.close()
 
                     metrics_i = validation_image(valset, categories, counts)
@@ -289,8 +293,8 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
                     fconv.close()
 
                     add_scalar_metrics(writer, epoch, metrics_i, 'image')
-                    # 每验证一次，保存模型
-                    save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
+
+                save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
 
             # Alternative training
             else:
@@ -346,10 +350,11 @@ def train(single_branch, total_epochs, last_epoch, mini_epochs, test_every, mode
 
                     add_scalar_metrics(writer, epoch, metrics_t, 'tile')
                     add_scalar_metrics(writer, epoch, metrics_i, 'image')
-                    save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
+
+                save_model(single_branch, epoch, model, optimizer, scheduler, output_path)
 
     end = int(time.time())
-    print("\nTrained for {} epochs. Runtime: {}s".format(total_epochs, end - start))
+    print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
 
 
 def save_model(single_branch, epoch, model, optimizer, scheduler, output_path):

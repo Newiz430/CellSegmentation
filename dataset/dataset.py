@@ -59,6 +59,11 @@ class LystoDataset(Dataset):
             transforms.Compose([
                 transforms.RandomHorizontalFlip(p=1),
                 transforms.RandomVerticalFlip(p=1)
+            ]),
+            transforms.Compose([
+                transforms.ColorJitter(),
+                transforms.RandomHorizontalFlip(p=1),
+                transforms.RandomVerticalFlip(p=1)
             ])
         ]
         self.transforms = [transforms.Compose([
@@ -78,7 +83,8 @@ class LystoDataset(Dataset):
 
         def store_data(transidx=0):
 
-            nonlocal organ, img, label, tileIDX
+            nonlocal organ, img, label, tileIDX, augment_transforms
+            assert transidx <= len(augment_transforms), "Not enough transformations for image augmentation. "
 
             self.organs.append(organ)
             self.images.append(img)
@@ -107,10 +113,10 @@ class LystoDataset(Dataset):
 
             tileIDX += 1
 
-            cls_label = store_data()
+            store_data()
             if self.train and augment:
-                for c in range(1, cls_label + 1):
-                    store_data(c)
+                for i in range(8):
+                    store_data(i)
 
         assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 

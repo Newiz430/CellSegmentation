@@ -43,8 +43,8 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
     print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train'):
-    """前馈推导一次模型，获取图像级的分类概率和回归预测值以及两者的整型版本。"""
+def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=True):
+    """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
 
     model.setmode("image")
     model.eval()
@@ -72,11 +72,12 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
             output_reg = np.round(output_reg.numpy()).astype(int)
             cat_labels = np.argmax(output_cls, axis=1)
 
-            for i, x in enumerate(output_reg):
-                if categorize(x) > cat_labels[i]:
-                    output_reg[i] = de_categorize(cat_labels[i])[1]
-                elif categorize(x) < cat_labels[i]:
-                    output_reg[i] = de_categorize(cat_labels[i])[0]
+            if cls_limit:
+                for i, x in enumerate(output_reg):
+                   if categorize(x) > cat_labels[i]:
+                       output_reg[i] = de_categorize(cat_labels[i])[1]
+                   elif categorize(x) < cat_labels[i]:
+                       output_reg[i] = de_categorize(cat_labels[i])[0]
 
             categories = np.concatenate((categories, cat_labels))
             counts = np.concatenate((counts, output_reg))
