@@ -17,8 +17,7 @@ from inference import inference_image
 now = int(time.time())
 
 parser = argparse.ArgumentParser(prog="test_count.py", description='Cell count evaluation')
-parser.add_argument('-m', '--model', type=str, default='checkpoint/checkpoint_10epochs.pth',
-                    help='path to pretrained model (default: checkpoint/checkpoint_10epochs.pth)')
+parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='batch size of images (default: 64)')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 parser.add_argument('-d', '--device', type=int, default=0, help='CUDA device id if available (default: 0)')
@@ -55,7 +54,7 @@ def test_count(testset, output_path):
     fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
         now, epoch)), 'w', newline="")
     w = csv.writer(fconv, delimiter=',')
-    w.writerow(['id', 'count'])
+    w.writerow(['id', 'count', 'category'])
 
     print('Start testing ...')
 
@@ -76,9 +75,10 @@ def test_count(testset, output_path):
     #     return np.round(output).astype(int)
 
     testset.setmode("count")
-    output = inference_image(test_loader, model, device, mode='test')[1]
-    for i, count in enumerate(output, start=1):
-        w.writerow([i, count])
+    model.setmode("image")
+    output = inference_image(test_loader, model, device, mode='test')
+    for i, y in enumerate(zip(*output), start=1):
+        w.writerow([i, y[1], y[0]])
 
     fconv.close()
 

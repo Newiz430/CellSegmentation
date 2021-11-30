@@ -62,7 +62,6 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     """
 
     # image training, dataset.mode = 5
-    model.setmode("image")
     model.train()
 
     image_cls_loss = 0.
@@ -109,14 +108,13 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     return image_cls_loss, image_reg_loss, image_loss
 
 
-def train_alternative(loader, epoch, total_epochs, mini_epochs, model, device, crit_cls, crit_reg, crit_seg, optimizer,
+def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, crit_seg, optimizer,
                       scheduler, threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
     :param loader:          训练集的迭代器
     :param epoch:           当前迭代次数
     :param total_epochs:    迭代总次数
-    :param mini_epochs:     一个 mini_epoch 包含迭代的次数
     :param model:           网络模型
     :param crit_cls:        分类器损失函数
     :param crit_reg:        回归损失函数
@@ -189,7 +187,7 @@ def train_alternative(loader, epoch, total_epochs, mini_epochs, model, device, c
         # print("image data size:", data[0].size(0))
         # print("tile data size:", data[1].size(0))
 
-        # if (i + 1) % ((len(loader) + 1) // mini_epochs) == 0:
+        # if (i + 1) % ((len(loader) + 1) // mini_epochs?) == 0:
         #     train_seg(train_loader_forward, batch_size, epoch, total_epochs, model, device,
         #     crit_seg, optimizer, threshold, save_masks=False)
         #     # TODO: save masks of all data after n iterations

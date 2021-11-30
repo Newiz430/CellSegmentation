@@ -8,7 +8,6 @@ from dataset import categorize, de_categorize
 def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='train'):
     """前馈推导一次模型，获取实例分类概率。"""
 
-    model.setmode("tile")
     model.eval()
 
     probs = torch.Tensor(len(loader.dataset))
@@ -43,10 +42,9 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
     print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=True):
+def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
 
-    model.setmode("image")
     model.eval()
 
     # probs = torch.tensor(())

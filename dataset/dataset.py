@@ -45,23 +45,9 @@ class LystoDataset(Dataset):
         self.tile_size = tile_size
 
         augment_transforms = [
-            transforms.ColorJitter(),
-            transforms.Compose([
-                transforms.ColorJitter(),
-                transforms.RandomHorizontalFlip(p=1)
-            ]),
-            transforms.Compose([
-                transforms.ColorJitter(),
-                transforms.RandomVerticalFlip(p=1)
-            ]),
             transforms.RandomHorizontalFlip(p=1),
             transforms.RandomVerticalFlip(p=1),
             transforms.Compose([
-                transforms.RandomHorizontalFlip(p=1),
-                transforms.RandomVerticalFlip(p=1)
-            ]),
-            transforms.Compose([
-                transforms.ColorJitter(),
                 transforms.RandomHorizontalFlip(p=1),
                 transforms.RandomVerticalFlip(p=1)
             ])
@@ -113,9 +99,10 @@ class LystoDataset(Dataset):
 
             tileIDX += 1
 
-            store_data()
-            if self.train and augment:
-                for i in range(8):
+            cls_label = store_data()
+            if self.train and augment and cls_label >= 3:
+                # TODO: augment
+                for i in range(1, 4):
                     store_data(i)
 
         assert len(self.labels) == len(self.images), "Mismatched number of labels and images."

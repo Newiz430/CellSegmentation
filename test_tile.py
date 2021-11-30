@@ -19,9 +19,8 @@ from save_images import heatmap
 
 now = int(time.time())
 
-parser = argparse.ArgumentParser(prog="test_tile.py", description='Testing & Heatmap')
-parser.add_argument('-m', '--model', type=str, default='checkpoint/checkpoint_10epochs.pth',
-                    help='path to pretrained model (default: checkpoint/checkpoint_10epochs.pth)')
+parser = argparse.ArgumentParser(prog="test_tile.py", description='Patch heatmap evaluation')
+parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('-b', '--batch_size', type=int, default=40960,
                     help='batch size of tiles (default: 40960)')
 parser.add_argument('-w', '--workers', default=4, type=int,
@@ -103,6 +102,7 @@ def test_tile(testset, output_path):
     print('Start testing ...')
 
     testset.setmode("tile")
+    model.setmode("tile")
     probs = inference_tiles(test_loader, model, device, mode='test')
     tiles, probs, groups = rank(testset, probs)
 

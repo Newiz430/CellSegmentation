@@ -85,8 +85,7 @@ class MILResNet(nn.Module):
         self.inplanes = 64
         super(MILResNet, self).__init__()
         # encoder
-        self.conv1_image = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.conv1_tile = nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -101,7 +100,7 @@ class MILResNet(nn.Module):
             nn.Flatten(),
             nn.Linear(512 * block.expansion, num_classes)
         )
-        self.map_size = 1
+        self.map_size = 1  # 1, 5?
         self.avgpool_image = nn.AdaptiveAvgPool2d((self.map_size, self.map_size))
         self.maxpool_image = nn.AdaptiveMaxPool2d((self.map_size, self.map_size))
         self.fc_image_cls = nn.Sequential(
@@ -207,9 +206,20 @@ class MILResNet(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-    def forward(self, x: torch.Tensor):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
+    def set_resnet_module_grads(self, requires_grad):
 
-        x = self.conv1_tile(x) if self.mode == "tile" else self.conv1_image(x) # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
+        self.conv1.requires_grad_(requires_grad)
+        self.bn1.requires_grad_(requires_grad)
+        self.relu.requires_grad_(requires_grad)
+        self.maxpool.requires_grad_(requires_grad)
+        self.layer1.requires_grad_(requires_grad)
+        self.layer2.requires_grad_(requires_grad)
+        self.layer3.requires_grad_(requires_grad)
+        self.layer4.requires_grad_(requires_grad)
+
+    def resnet_forward(self, x: torch.Tensor):
+
+        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
@@ -218,7 +228,13 @@ class MILResNet(nn.Module):
         x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 256, 19, 19]
         x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 512, 10, 10]
 
-        if self.mode == "tile":
+        return x4, x3, x2, x1
+
+    def forward(self, x: torch.Tensor):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
+
+        x4, x3, x2, x1 = self.resnet_forward(x)
+
+        if self.mode in "tile":
 
             x = self.avgpool_tile(x4) + self.maxpool_tile(x4) # x: [nk, 512, 1, 1]
             x = self.fc_tile(x)  # x: [nk, 512]
