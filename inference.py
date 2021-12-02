@@ -13,7 +13,7 @@ def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='
     probs = torch.Tensor(len(loader.dataset))
     with torch.no_grad():
         tile_bar = tqdm(loader, desc="tile forwarding")
-        if mode == 'test':
+        if epoch is not None:
             tile_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
         for i, input in enumerate(tile_bar):
             if mode == 'train':
@@ -66,16 +66,16 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
             # probs = torch.cat((probs, output_cls), dim=0)  # probs: [len(dataset), 7]
             # nums = torch.cat((nums, output_reg), dim=0)  # nums: [len(dataset)]
 
-            output_cls = np.round(output_cls.numpy()).astype(int)
             output_reg = np.round(output_reg.numpy()).astype(int)
             cat_labels = np.argmax(output_cls, axis=1)
 
             if cls_limit:
                 for i, x in enumerate(output_reg):
-                   if categorize(x) > cat_labels[i]:
-                       output_reg[i] = de_categorize(cat_labels[i])[1]
-                   elif categorize(x) < cat_labels[i]:
-                       output_reg[i] = de_categorize(cat_labels[i])[0]
+                    if cat_labels[i] > 4:
+                        if categorize(x) > cat_labels[i]:
+                            output_reg[i] = de_categorize(cat_labels[i])[1]
+                        elif categorize(x) < cat_labels[i]:
+                            output_reg[i] = de_categorize(cat_labels[i])[0]
 
             categories = np.concatenate((categories, cat_labels))
             counts = np.concatenate((counts, output_reg))

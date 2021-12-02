@@ -1,14 +1,10 @@
 import os
-import numpy as np
 import argparse
 import time
-from tqdm import tqdm
 import csv
 
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 
 from dataset import LystoTestset
 from model import encoders
@@ -19,6 +15,8 @@ now = int(time.time())
 parser = argparse.ArgumentParser(prog="test_count.py", description='Cell count evaluation')
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='batch size of images (default: 64)')
+parser.add_argument('-c', '--cls_limit', action='store_true',
+                    help='whether or not limiting counts by classification results')
 parser.add_argument('-w', '--workers', default=4, type=int, help='number of dataloader workers (default: 4)')
 parser.add_argument('-d', '--device', type=int, default=0, help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now),
@@ -38,7 +36,6 @@ test_loader = DataLoader(imageSet_test, batch_size=args.image_batch_size, shuffl
 
 f = torch.load(args.model)
 model = encoders[f['encoder']]
-model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 epoch = f['epoch']
 model.load_state_dict(f['state_dict'])
 
@@ -47,7 +44,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.devic
 model.to(device)
 
 
-def test_count(testset, output_path):
+def test_count(testset, cls_limit, output_path):
 
     global epoch, model
 
@@ -58,25 +55,9 @@ def test_count(testset, output_path):
 
     print('Start testing ...')
 
-    # def predict_counts(loader, model, device):
-    #     """预测测试集图片中阳性细胞的数目。"""
-    #
-    #     model.setmode("image")
-    #     model.eval()
-    #
-    #     output = np.array([])
-    #
-    #     with torch.no_grad():
-    #         image_bar = tqdm(loader, desc="cell counting")
-    #         for input in image_bar:
-    #             output = np.concatenate((output, model(input.to(device))[1].squeeze().cpu().numpy()))
-    #
-    #     # print("output.size = ", output.shape)
-    #     return np.round(output).astype(int)
-
     testset.setmode("count")
     model.setmode("image")
-    output = inference_image(test_loader, model, device, mode='test')
+    output = inference_image(test_loader, model, device, mode='test', cls_limit=cls_limit)
     for i, y in enumerate(zip(*output), start=1):
         w.writerow([i, y[1], y[0]])
 
@@ -85,4 +66,4 @@ def test_count(testset, output_path):
 
 if __name__ == "__main__":
 
-    test_count(imageSet_test, output_path=args.output)
+    test_count(imageSet_test, args.cls_limit, output_path=args.output)

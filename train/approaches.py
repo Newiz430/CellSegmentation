@@ -5,10 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import *
 
-from save_images import generate_masks
 
-
-def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler):
+def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, gamma):
     """Tile training for one epoch.
 
     :param loader:          训练集的迭代器
@@ -30,14 +28,15 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
 
         output = model(data.to(device))
         optimizer.zero_grad()
-        loss = criterion(output, label.to(device))  # CrossEntropy 本身携带了 softmax()
+        loss = criterion(output, label.to(device)) * gamma  # CrossEntropy 本身携带了 softmax()
 
-        tile_num += data.size(0)
-        train_loss += loss.item() * data.size(0)
         loss.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
             scheduler.step()
+
+        tile_num += data.size(0)
+        train_loss += loss.item() * data.size(0)
 
     if not (scheduler is None or isinstance(scheduler, (CyclicLR, OneCycleLR))):
         scheduler.step()
@@ -46,7 +45,7 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
     return train_loss
 
 
-def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, optimizer, scheduler, beta, gamma):
+def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, optimizer, scheduler, alpha, beta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
     :param loader:          训练集的迭代器
@@ -78,13 +77,8 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
 
         image_cls_loss_i = crit_cls(output[0], label_cls.to(device))
         image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
-        # # For weighted MSE
-        # image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32),
-        #                             label_cls.to(device, dtype=torch.float32))
 
-        # total_loss_i = alpha * tile_loss_i + beta * image_cls_loss_i + \
-        #                gamma * image_reg_loss_i + delta * image_seg_loss_i
-        image_loss_i = beta * image_cls_loss_i + gamma * image_reg_loss_i
+        image_loss_i = alpha * image_cls_loss_i + beta * image_reg_loss_i
         image_loss_i.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
@@ -106,6 +100,36 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     image_reg_loss /= len(loader.dataset)
 
     return image_cls_loss, image_reg_loss, image_loss
+
+
+def train_seg(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, delta):
+
+    # segmentation training
+    model.train()
+
+    image_seg_loss = 0.
+
+    train_bar = tqdm(loader, desc="segmentation training")
+    train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+    for i, (image, mask, label) in enumerate(train_bar):
+
+        # label = label.to(device)
+        output = model(image.to(device))
+        optimizer.zero_grad()
+        loss = criterion(output, mask.to(device)) * delta
+
+        loss.backward()
+        optimizer.step()
+        if isinstance(scheduler, (CyclicLR, OneCycleLR)):
+            scheduler.step()
+
+        image_seg_loss += loss.item() * image.size(0)
+
+    if not (scheduler is None or isinstance(scheduler, (CyclicLR, OneCycleLR))):
+        scheduler.step()
+
+    image_seg_loss /= len(loader.dataset)
+    return image_seg_loss
 
 
 def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, crit_seg, optimizer,
@@ -150,7 +174,7 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
         output = model(data[1].to(device))
         optimizer.zero_grad()
 
-        tile_loss_i = alpha * crit_cls(output, labels[2].to(device))
+        tile_loss_i = gamma * crit_cls(output, labels[2].to(device))
         tile_loss_i.backward()
         optimizer.step()
 
@@ -166,14 +190,11 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
 
         image_cls_loss_i = crit_cls(output[0], labels[0].to(device))
         image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32))
-        # # For weighted MSE
-        # image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32),
-        #                             labels[0].to(device, dtype=torch.float32))
         # image_seg_loss_i = crit_seg(output[?], labels[?].to(device))
 
-        # total_loss_i = alpha * tile_loss_i + beta * image_cls_loss_i + \
-        #                gamma * image_reg_loss_i + delta * image_seg_loss_i
-        image_loss_i = beta * image_cls_loss_i + gamma * image_reg_loss_i
+        # total_loss_i = gamma * tile_loss_i + alpha * image_cls_loss_i + \
+        #                beta * image_reg_loss_i + delta * image_seg_loss_i
+        image_loss_i = alpha * image_cls_loss_i + beta * image_reg_loss_i
         image_loss_i.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
@@ -206,36 +227,3 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
     return tile_loss, image_cls_loss, image_reg_loss, image_seg_loss, image_loss
 
 
-# def train_seg(trainset, loader, batch_size, epoch, total_epochs, model, device, crit_seg, optimizer, threshold, save_masks):
-#
-#     # pt.3 segment training
-#     trainset.setmode(1)
-#     model.setmode("segment")
-#
-#     probs = torch.Tensor(len(loader.dataset))
-#     with torch.no_grad():
-#         tile_bar = tqdm(loader, desc="tile forwarding (seg)", leave=False)
-#         tile_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
-#         for i, input in enumerate(tile_bar):
-#             model.setmode("tile")
-#             model.eval()
-#             output = model(input[0].to(device))
-#             output = F.softmax(output, dim=1)
-#             probs[i * batch_size:i * batch_size + input[0].size(0)] = output.detach()[:, 1].clone()
-#
-#     groups = np.array(trainset.tileIDX)
-#     tiles = np.array(trainset.tiles_grid)
-#
-#     order = np.lexsort((probs, groups))
-#     groups = groups[order]
-#     probs = probs[order]
-#     tiles = tiles[order]
-#
-#     index = [prob > threshold for prob in probs]
-#
-#     pseudo_masks = generate_masks(trainset, tiles[index], groups[index], save_masks)
-#
-#     # TODO: create a new dataset for masks
-#     trainset.setmode(2)
-#     model.train()
-#     # TODO: load data for segmentation head training

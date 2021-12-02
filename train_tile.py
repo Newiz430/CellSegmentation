@@ -2,7 +2,6 @@ import warnings
 import os
 import argparse
 import time
-import csv
 
 import torch
 import torch.optim as optim
@@ -15,10 +14,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from dataset import LystoDataset
 from model import encoders
-from inference import *
+from inference import inference_tiles, sample
 from train import train_tile
-from validation import *
-from utils.collate import default_collate
+from validation import validation_tile
 
 warnings.filterwarnings("ignore")
 now = int(time.time())
@@ -71,9 +69,8 @@ now = int(time.time())
 
 # data setup
 print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
-      .format('tile + image (pt.2)', 'GPU' if torch.cuda.is_available() else 'CPU',
-              args.encoder, args.epochs,
+print("Training Mode: {} | Device: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
+      .format('tile + image (pt.2)', 'GPU' if torch.cuda.is_available() else 'CPU', args.epochs,
               'Validate every {} epoch(s)'.format(args.test_every) if args.test_every <= args.epochs else 'No validation',
               args.lr, args.output))
 print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {}"
@@ -86,14 +83,13 @@ kfold = None if args.test_every > args.epochs else 10
 trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold, num_of_imgs=0)
 valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False, kfold=kfold)
 
-collate_fn = default_collate
 # TODO: how can I split the training step for distributed parallel training?
 train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
 train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
 train_loader_backward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
-                                        num_workers=args.workers, sampler=train_sampler, pin_memory=True)
+                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
 val_loader = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                              sampler=val_sampler, pin_memory=True)
 
@@ -101,8 +97,8 @@ val_loader = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, 
 f = torch.load(args.model)
 model = encoders[f['encoder']]
 # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 model.load_state_dict(f['state_dict'])
+model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 # freeze resnet encoder
 model.set_resnet_module_grads(False)
 
@@ -182,21 +178,22 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, optimizer, sche
     global device, now
 
     # open output file
-    fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'w')
+    fconv = open(os.path.join(output_path, '{}-tile-training.csv'.format(now)), 'w')
     fconv.write('epoch,tile_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-training.csv
+    # 训练结果保存在 output_path/<timestamp>-tile-training.csv
     if test_every <= args.epochs:
-        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
+        fconv = open(os.path.join(output_path, '{}-tile-validation.csv'.format(now)), 'w')
         fconv.write('epoch,tile_error,tile_fpr,tile_fnr\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-validation.csv
+    # 验证结果保存在 output_path/<timestamp>-tile-validation.csv
 
     print('Training ...'if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
     with SummaryWriter() as writer:
+        gamma = 1.
 
         print("PT.II - tile classifier training ...")
         model.setmode("tile")
@@ -208,13 +205,13 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, optimizer, sche
 
             trainset.setmode(3)
             loss = train_tile(train_loader_backward, epoch, total_epochs, model, device, crit_cls, optimizer,
-                              scheduler)
+                              scheduler, gamma)
             print("tile loss: {:.4f}".format(loss))
-            fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
+            fconv = open(os.path.join(output_path, '{}-tile-training.csv'.format(now)), 'a')
             fconv.write('{},{}\n'.format(epoch, loss))
             fconv.close()
 
-            add_scalar_loss(writer, epoch, loss, ['tile'])
+            add_scalar_loss(writer, epoch, loss)
 
             # Validating step
             if validate(epoch, test_every):
@@ -223,9 +220,9 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, optimizer, sche
 
                 probs_t = inference_tiles(val_loader, model, device, epoch, total_epochs)
                 metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
-                print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
+                print('tile error: {} | tile FPR: {} | tile FNR: {}\n'.format(*metrics_t))
 
-                fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
+                fconv = open(os.path.join(output_path, '{}-tile-validation.csv'.format(now)), 'a')
                 fconv.write('{},{},{},{}\n'.format(epoch, *metrics_t))
                 fconv.close()
 
@@ -251,22 +248,9 @@ def save_model(epoch, model, optimizer, scheduler, output_path):
     torch.save(obj, os.path.join(output_path, 'pt2_{}epochs.pth'.format(epoch)))
 
 
-def add_scalar_loss(writer, epoch, losses, mode):
+def add_scalar_loss(writer, epoch, loss):
 
-    losses = list(losses)
-
-    if 'tile' in mode:
-        writer.add_scalar("tile loss", losses.pop(0), epoch)
-
-    if 'image' in mode:
-        writer.add_scalar("image cls loss", losses.pop(0), epoch)
-        writer.add_scalar("image reg loss", losses.pop(0), epoch)
-
-    if 'segment' in mode:
-        writer.add_scalar("image seg loss", losses.pop(0), epoch)
-
-    if 'total' in mode:
-        writer.add_scalar("image loss", losses.pop(0), epoch)
+    writer.add_scalar("tile loss", loss, epoch)
 
 
 def add_scalar_metrics(writer, epoch, metrics):

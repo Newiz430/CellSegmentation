@@ -4,7 +4,6 @@ import argparse
 import time
 import csv
 
-import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -13,14 +12,13 @@ from torch.optim.lr_scheduler import *
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import save_image
 
 from dataset import LystoDataset
 from model import encoders
 from inference import *
 from train import *
 from validation import *
-from utils.collate import default_collate
+from utils import default_collate
 
 warnings.filterwarnings("ignore")
 now = int(time.time())
@@ -108,7 +106,7 @@ train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and arg
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
 train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
                                   num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_tile = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
+train_loader_backward_tile = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True)
 train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
                                          num_workers=args.workers, sampler=train_sampler, pin_memory=True,
@@ -314,10 +312,10 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
                 trainset.setmode(2)
                 # if epoch == total_epochs:
                 #     trainset.visualize_bboxes()  # tile visualize testing
-                alpha = 1
-                beta = 1
-                gamma = 1
-                delta = 0.1
+                alpha = 1.
+                beta = 1.
+                gamma = 1.
+                delta = 1.
                 loss = train_alternative(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
                                          crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
 
@@ -332,6 +330,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
                 # Validating step
                 if validate(epoch, test_every):
                     valset.setmode(1)
+                    model.setmode("tile")
                     print('Validating ...')
 
                     probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
@@ -340,6 +339,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
 
                     # image validating
                     valset.setmode(4)
+                    model.setmode("image")
                     categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
 
                     regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(

@@ -1,3 +1,4 @@
+import os
 import sys
 
 import h5py
@@ -13,7 +14,7 @@ import torchvision.utils as utils
 
 class LystoDataset(Dataset):
 
-    def __init__(self, filepath, tile_size=None, interval=None, train=True, augment=True, kfold=10, num_of_imgs=0):
+    def __init__(self, filepath, tile_size=None, interval=None, train=True, augment=False, kfold=10, num_of_imgs=0):
         """
         :param filepath:    hdf5数据文件路径
         :param train:       训练集 / 验证集，默认为训练集
@@ -26,7 +27,7 @@ class LystoDataset(Dataset):
         if filepath:
             f = h5py.File(filepath, 'r')
         else:
-            raise Exception("Invalid data file.")
+            raise FileNotFoundError("Invalid data file.")
 
         if kfold is not None and kfold <= 0:
             raise Exception("Invalid k-fold cross-validation argument.")
@@ -101,7 +102,6 @@ class LystoDataset(Dataset):
 
             cls_label = store_data()
             if self.train and augment and cls_label >= 3:
-                # TODO: augment
                 for i in range(1, 4):
                     store_data(i)
 
@@ -255,7 +255,7 @@ class LystoTestset(Dataset):
         if filepath:
             f = h5py.File(filepath, 'r')
         else:
-            raise Exception("Invalid data file.")
+            raise FileNotFoundError("Invalid data file.")
 
         self.organs = []            # 全切片来源，array ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
@@ -326,10 +326,53 @@ class LystoTestset(Dataset):
             raise Exception("Something wrong in setmode.")
 
 
-class MaskSet(Dataset):
+class Maskset(Dataset):
 
-    def __init__(self):
-        pass
+    def __init__(self, filepath, mask_data):
+
+        assert type(mask_data) in [np.ndarray, str], "Invalid data type. "
+
+        if filepath:
+            f = h5py.File(filepath, 'r')
+        else:
+            raise FileNotFoundError("Invalid data file.")
+
+        self.organs = []
+        self.images = []
+        self.masks = []
+        self.labels = []
+
+        for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
+            self.organs.append(organ)
+            self.images.append(img)
+            self.labels.append(label)
+
+        if isinstance(mask_data, str):
+            for file in os.listdir(os.path.join(mask_data, 'mask')):
+                img = Image.open(os.path.join(mask_data, 'mask', file))
+                self.masks.append(np.asarray(img))
+        else:
+            self.masks = [torch.from_numpy(np.uint8(md)) for md in mask_data]
+
+        assert len(self.masks) == len(self.images), "Mismatched number of masks and RGB images."
+
+        self.transforms = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225])
+        ])
+
+    def __getitem__(self, idx):
+
+        image = self.transforms(self.images[idx])
+        mask = self.masks[idx]
+        label = self.labels[idx]
+
+        return image, mask, label
+
+    def __len__(self):
+        return len(self.images)
 
 
 def get_tiles(image, interval, size):

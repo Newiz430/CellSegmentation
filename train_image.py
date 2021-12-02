@@ -4,6 +4,7 @@ import argparse
 import time
 import csv
 
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -15,10 +16,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 from dataset import LystoDataset
 from model import encoders
-from inference import *
-from train import train_image
-from validation import *
-from utils.collate import default_collate
+from inference import inference_image
+from train import train_image, WeightedMSELoss
+from validation import validation_image
+from utils import default_collate
 
 warnings.filterwarnings("ignore")
 now = int(time.time())
@@ -65,7 +66,8 @@ print("Training settings: ")
 print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
       .format('tile + image (pt.1)', 'GPU' if torch.cuda.is_available() else 'CPU',
               args.encoder, args.epochs,
-              'Validate every {} epoch(s)'.format(args.test_every) if args.test_every <= args.epochs else 'No validation',
+              'Validate every {} epoch(s)'.format(
+                  args.test_every) if args.test_every <= args.epochs else 'No validation',
               args.lr, args.output))
 print("Image batch size: {}".format(args.image_batch_size))
 if not os.path.exists(args.output):
@@ -80,11 +82,10 @@ collate_fn = default_collate
 # TODO: how can I split the training step for distributed parallel training?
 train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
 val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
-                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True,
-                                         collate_fn=collate_fn)
+train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,
+                          sampler=train_sampler, pin_memory=True, collate_fn=collate_fn)
 val_loader = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
-                              sampler=val_sampler, pin_memory=True)
+                        sampler=val_sampler, pin_memory=True)
 
 # model setup
 model = encoders[args.encoder]
@@ -114,13 +115,13 @@ optimizers = {
     'Adam': optim.Adam([optimizer_params], lr=args.lr, weight_decay=1e-4)
 }
 schedulers = {
-    'OneCycleLR': OneCycleLR, # note that last_epoch means last iteration number here
+    'OneCycleLR': OneCycleLR,  # note that last_epoch means last iteration number here
     'ExponentialLR': ExponentialLR,
     'CosineAnnealingWarmRestarts': CosineAnnealingWarmRestarts,
 }
 scheduler_kwargs = {
     'OneCycleLR': {
-        'max_lr': args.lr,
+        'max_lr': args.lr,  # note that input lr means max_lr here
         'epochs': args.epochs,
         'steps_per_epoch': len(train_loader),
     },
@@ -165,23 +166,23 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
     global device, now
 
     # open output file
-    fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'w')
+    fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_cls_loss,image_reg_loss,image_loss,image_seg_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-training.csv
+    # 训练结果保存在 output_path/<timestamp>-image-training.csv
     if test_every <= args.epochs:
-        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'w')
+        fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
         fconv.write('epoch,image_map,mse,qwk\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-validation.csv
+    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
 
-    print('Training ...'if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
+    print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
     with SummaryWriter() as writer:
+        alpha = 1
         beta = 1
-        gamma = 1
 
         print("PT.I - image assessment training ...")
         model.setmode("image")
@@ -189,12 +190,12 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
             trainset.setmode(5)
 
             loss = train_image(train_loader, epoch, total_epochs, model, device, crit_cls, crit_reg,
-                               optimizer, scheduler, beta, gamma)
+                               optimizer, scheduler, alpha, beta)
 
             print("image cls loss: {:.4f} | image reg loss: {:.4f} | image loss: {:.4f}"
                   .format(*loss))
-            fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
-            fconv.write('{},,{},{},{}\n'.format(epoch, *loss))
+            fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'a')
+            fconv.write('{},{},{},{}\n'.format(epoch, *loss))
             fconv.close()
 
             add_scalar_loss(writer, epoch, loss, ['image', 'total'])
@@ -218,8 +219,8 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
 
                 metrics_i = validation_image(valset, categories, counts)
                 print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
-                fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                fconv.write('{},,,,{},{},{}\n'.format(epoch, *metrics_i))
+                fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
+                fconv.write('{},{},{},{}\n'.format(epoch, *metrics_i))
                 fconv.close()
 
                 add_scalar_metrics(writer, epoch, metrics_i)
@@ -244,26 +245,14 @@ def save_model(epoch, model, optimizer, scheduler, output_path):
     torch.save(obj, os.path.join(output_path, 'pt1_{}epochs.pth'.format(epoch)))
 
 
-def add_scalar_loss(writer, epoch, losses, mode):
+def add_scalar_loss(writer, epoch, losses):
 
-    losses = list(losses)
-
-    if 'tile' in mode:
-        writer.add_scalar("tile loss", losses.pop(0), epoch)
-
-    if 'image' in mode:
-        writer.add_scalar("image cls loss", losses.pop(0), epoch)
-        writer.add_scalar("image reg loss", losses.pop(0), epoch)
-
-    if 'segment' in mode:
-        writer.add_scalar("image seg loss", losses.pop(0), epoch)
-
-    if 'total' in mode:
-        writer.add_scalar("image loss", losses.pop(0), epoch)
+    writer.add_scalar("image cls loss", losses[0], epoch)
+    writer.add_scalar("image reg loss", losses[1], epoch)
+    writer.add_scalar("image loss", losses[2], epoch)
 
 
 def add_scalar_metrics(writer, epoch, metrics):
-
     metrics = list(metrics)
 
     assert len(metrics) == 3, "Image metrics should include 3 items: mAP, MSE and QWK. "
@@ -273,7 +262,6 @@ def add_scalar_metrics(writer, epoch, metrics):
 
 
 if __name__ == "__main__":
-
     train(total_epochs=args.epochs,
           last_epoch=last_epoch,
           test_every=args.test_every,

@@ -19,19 +19,28 @@ class WeightedMSELoss(nn.Module):
     def __init__(self, reduction='mean'):
         """
         A weighted version of MSE. Weights are the classification labels from the image_cls branch.
-        Set $exp(w) / sum(w)$ as a single weight factor.
+        Set $ln(\text{count}), \text{count} \ge 20$ as a single weight factor.
         """
         super(WeightedMSELoss, self).__init__()
         assert reduction in ('mean', 'sum'), "\'reduction\' must be one of (\'mean\', \'sum\'). "
         self.reduction = reduction
 
-    def forward(self, inputs, targets, weights):
-        return weighted_mse_loss(inputs, targets, weights=weights, reduction=self.reduction)
+    def forward(self, inputs, targets):
+        return weighted_mse_loss(inputs, targets, reduction=self.reduction)
 
 
-def weighted_mse_loss(inputs, targets, weights, reduction='mean'):
+def weighted_mse_loss(inputs, targets, reduction='mean'):
     assert reduction in ('mean', 'sum'), "\'reduction\' must be one of (\'mean\', \'sum\'). "
 
-    # 2 ** (w - 1) to map categories-[0, 1, 2, 3, 4, 5, 6] to weights-[.5, 1, 2, 4, 8, 16, 32]
-    tmp = 2 ** (weights - 1) * (inputs - targets) ** 2
+    # for count = 20 or more set weight = ln(count)
+    weights = targets.clone()
+    for i, w in enumerate(weights):
+        if torch.ge(w, 20):
+            weights[i] = torch.log(w) if torch.ge(w, 20) else 1
+
+    tmp = weights * (inputs - targets) ** 2
     return torch.mean(tmp) if reduction == 'mean' else torch.sum(tmp)
+
+
+class DiceLoss(nn.Module):
+    pass

@@ -29,59 +29,28 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
         Image.fromarray(np.uint8(img)).save(os.path.join(output_path, name))
 
 
-def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseudomask"):
-    """把预测得到的阳性细胞区域做成二值掩码。
+def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/pseudomask"):
+    """把预测得到的阳性细胞区域做成二值掩码。"""
 
-    :param dataset:         训练数据集
-    :param tiles:           要标注的补丁
-    :param output_path:     图像存储路径
-    """
+    pseudo_masks = np.zeros((len(dataset), *dataset.image_size))
 
-    count = 0
-    idx = len(dataset)
-    pseudo_masks = []
+    for i in range(len(groups)):
 
-    mask_bar = tqdm(range(1, len(groups) + 1), desc="mask generating (seg)", leave=False)
-    for i in mask_bar:
-        count += 1
+        tile_mask = np.ones((dataset.tile_size, dataset.tile_size))
+        grid = list(map(int, tiles[i]))
 
-        if i == len(groups) or groups[i] != groups[i - 1]:
+        pseudo_masks[groups[i]][grid[0]: grid[0] + dataset.tile_size,
+                                grid[1]: grid[1] + dataset.tile_size] = tile_mask
 
-            mask = np.zeros(dataset.image_size)
-
-            for j in range(i - count, i):
-                tile_mask = np.ones((dataset.tile_size, dataset.tile_size))
-                grid = list(map(int, tiles[j]))
-
-                mask[grid[0]: grid[0] + dataset.tile_size,
-                     grid[1]: grid[1] + dataset.tile_size] = tile_mask
-
-            pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
-            if save_masks:
-                Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
-                    os.path.join(output_path, "rgb/{}_{}.png".format(groups[i - 1], dataset.labels[groups[i - 1]])),
-                    optimize=True)
-                Image.fromarray(np.uint8(mask * 255)).save(
-                    os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
-                    optimize=True)
-
-            count = 0
-
-            print(len(pseudo_masks))
-
-            # 没有阳性 tile 的时候。。。
-            if i == len(groups) and groups[i - 1] != idx or groups[i - 1] != groups[i] - 1:
-                for j in range(groups[i - 1] + 1, idx if i == len(groups) else groups[i]):
-                    mask = np.zeros(dataset.image_size)
-
-                    pseudo_masks.append(torch.from_numpy(np.uint8(mask)))
-                    if save_masks:
-                        Image.fromarray(np.uint8(dataset.images[groups[i - 1]])).save(
-                            os.path.join(output_path, "rgb/{}_{}.png".format(groups[i - 1], dataset.labels[groups[i - 1]])),
-                            optimize=True)
-                        Image.fromarray(np.uint8(mask * 255)).save(
-                            os.path.join(output_path, "mask/{}.png".format(groups[i - 1])),
-                            optimize=True)
+    if save_masks:
+        for i in tqdm(range(len(dataset)), desc="saving mask images"):
+            Image.fromarray(np.uint8(dataset.images[i])).save(
+                os.path.join(output_path, "rgb/{}.png".format(groups[i] + 1)),
+                optimize=True)
+            Image.fromarray(np.uint8(pseudo_masks[i] * 255)).save(
+                os.path.join(output_path, "mask/{}.png".format(groups[i] + 1)),
+                optimize=True)
+    print("Original images & masks saved in {}.".format(output_path))
 
     return pseudo_masks
 
@@ -114,13 +83,7 @@ def generate_masks(dataset, tiles, groups, save_masks, output_path="./data/pseud
 
 
 def heatmap(testset, tiles, probs, groups, csv_file, output_path):
-    """把预测得到的阳性细胞区域标在图上。
-
-    :param testset:         测试集
-    :param tiles:           要标注的补丁
-    :param probs:           补丁对应的概率
-    :param output_path:     图像存储路径
-    """
+    """把预测得到的阳性细胞区域标在图上。"""
 
     global epoch
 
@@ -149,7 +112,7 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 
             mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
             img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-            Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(groups[i - 1])))
+            Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(groups[i - 1] + 1)))
 
             count = 0
 
@@ -160,7 +123,7 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
                     mask = np.zeros((img.shape[0], img.shape[1]))
                     mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
                     img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-                    Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(j)))
+                    Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(j + 1)))
 
 
 if __name__ == "__main__":

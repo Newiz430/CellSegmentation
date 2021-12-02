@@ -2,20 +2,16 @@ import os
 import numpy as np
 import argparse
 import time
-from tqdm import tqdm
 import csv
-import cv2
-from PIL import Image
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 
 from dataset import LystoTestset
 from model import encoders
 from inference import inference_tiles
-from save_images import heatmap
+from utils import heatmap
 
 now = int(time.time())
 
@@ -46,7 +42,7 @@ if not os.path.exists(args.output):
     os.mkdir(args.output)
 
 print('Loading Dataset ...')
-imageSet_test = LystoTestset("data/testing.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
+imageSet_test = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
 test_loader = DataLoader(imageSet_test, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
                          pin_memory=False)
 
@@ -72,7 +68,7 @@ def test_tile(testset, output_path):
 
     global epoch, model
 
-    # 热图中各个 tile 的信息保存在 output_path/<timestamp>-pred-<epoch>-<tilesize>-<interval>-<threshold>.csv
+    # 热图中各个 tile 的信息保存在 output_path/<timestamp>-pred-e<epoch>-p<tilesize>-i<interval>-c<threshold>.csv
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
         now, epoch, args.tile_size, args.interval, args.threshold)), 'w', newline="")
     w = csv.writer(fconv)
