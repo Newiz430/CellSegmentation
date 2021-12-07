@@ -67,11 +67,6 @@ parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FIL
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
 
-# if torch.cuda.is_available():
-#     torch.cuda.manual_seed(1)
-# else:
-#     torch.manual_seed(1)
-
 max_acc = 0
 verbose = True
 now = int(time.time())
@@ -219,6 +214,12 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
     start = int(time.time())
     with SummaryWriter() as writer:
         for epoch in range(1 + last_epoch, total_epochs + 1):
+
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
+
             # Training tile-mode only
             if single_branch == 'tile_only':
 

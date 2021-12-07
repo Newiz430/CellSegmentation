@@ -82,3 +82,45 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
 
     # return probs.numpy(), nums.numpy()
     return categories, counts
+
+
+def inference_image_cls(loader, model, device, epoch=None, total_epochs=None, mode='train'):
+
+    model.eval()
+
+    categories = np.array(())
+    with torch.no_grad():
+        image_bar = tqdm(loader, desc="image forwarding")
+        if epoch is not None and total_epochs is not None:
+            image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+        for i, data in enumerate(image_bar):
+            if mode == 'train':
+                data = data[0]
+            output = model(data.to(device))
+            output_cls = F.softmax(output[0], dim=1)
+            output_cls = output_cls.detach().clone().cpu()
+            cat_labels = np.argmax(output_cls, axis=1)
+
+            categories = np.concatenate((categories, cat_labels))
+
+    return categories  # [n, 1]
+
+
+def inference_image_reg(loader, model, device, epoch=None, total_epochs=None, mode='train'):
+
+    model.eval()
+
+    nums = torch.tensor(())
+    with torch.no_grad():
+        image_bar = tqdm(loader, desc="image forwarding")
+        if epoch is not None and total_epochs is not None:
+            image_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+        for i, data in enumerate(image_bar):
+            if mode == 'train':
+                data = data[0]
+            output = model(data.to(device))
+            output_reg = output[1].detach()[:, 0].clone().cpu()
+
+            nums = torch.cat((nums, output_reg), dim=0)  # nums: [len(dataset)]
+
+    return nums.numpy()

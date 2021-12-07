@@ -79,6 +79,7 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
         image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
 
         image_loss_i = alpha * image_cls_loss_i + beta * image_reg_loss_i
+        # image_loss_i = image_reg_loss_i
         image_loss_i.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
@@ -100,6 +101,74 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     image_reg_loss /= len(loader.dataset)
 
     return image_cls_loss, image_reg_loss, image_loss
+    # return 0, image_reg_loss, image_loss
+
+
+def train_image_cls(loader, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler):
+
+    # image training, dataset.mode = 5
+    model.train()
+
+    image_cls_loss = 0.
+    image_loss = 0.
+
+    train_bar = tqdm(loader, desc="image training")
+    train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+    for i, (data, label_cls, label_num) in enumerate(train_bar):
+
+        output = model(data.to(device))
+
+        optimizer.zero_grad()
+
+        image_cls_loss_i = crit_cls(output[0], label_cls.to(device))
+        image_cls_loss_i.backward()
+        optimizer.step()
+        if isinstance(scheduler, (CyclicLR, OneCycleLR)):
+            scheduler.step()
+
+        image_cls_loss += image_cls_loss_i.item() * data.size(0)
+
+    if not (scheduler is None or isinstance(scheduler, (CyclicLR, OneCycleLR))):
+        scheduler.step()
+
+    image_loss /= len(loader.dataset)
+    image_cls_loss /= len(loader.dataset)
+
+    return image_cls_loss
+
+
+def train_image_reg(loader, epoch, total_epochs, model, device, crit_reg, optimizer, scheduler):
+
+    # image training, dataset.mode = 5
+    model.train()
+
+    image_reg_loss = 0.
+    image_loss = 0.
+
+    train_bar = tqdm(loader, desc="image training")
+    train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
+    for i, (data, label_cls, label_num) in enumerate(train_bar):
+
+        output = model(data.to(device))
+
+        optimizer.zero_grad()
+
+        image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
+        image_reg_loss_i.backward()
+        optimizer.step()
+        if isinstance(scheduler, (CyclicLR, OneCycleLR)):
+            scheduler.step()
+
+        image_reg_loss += image_reg_loss_i.item() * data.size(0)
+        image_loss += image_reg_loss_i.item() * data.size(0)
+
+    if not (scheduler is None or isinstance(scheduler, (CyclicLR, OneCycleLR))):
+        scheduler.step()
+
+    image_loss /= len(loader.dataset)
+    image_reg_loss /= len(loader.dataset)
+
+    return image_reg_loss
 
 
 def train_seg(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, delta):

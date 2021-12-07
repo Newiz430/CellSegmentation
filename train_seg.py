@@ -46,6 +46,8 @@ parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int,
                     help='validate every (default: 1) epoch(s). To use all data for training, set this greater than --epochs')
+parser.add_argument('-c', '--threshold', type=float, default=0.95,
+                    help='minimal prob for tiles to show in generating segmentation masks (default: 0.95)')
 parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -92,7 +94,7 @@ else:
     model.to(device)
 
 
-def rank(dataset, probs):
+def rank(dataset, probs, threshold):
     """按概率对 tile 排序，便于与置信度进行比较。"""
 
     groups = np.array(dataset.tileIDX)
@@ -106,21 +108,21 @@ def rank(dataset, probs):
     # index = np.empty(len(groups), 'bool')
     # index[-topk:] = True
     # index[:-topk] = groups[topk:] != groups[:-topk]
-    index = [prob > args.threshold for prob in probs]
+    index = [prob > threshold for prob in probs]
 
     return tiles[index], probs[index], groups[index]
 
 kfold = None if args.test_every > args.epochs else 10
 if not args.skip_draw:
 
-    dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval)
+    dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, augment=False, kfold=None)
     loader = DataLoader(dataset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                         pin_memory=False)
     dataset.setmode(1)
     model.setmode("tile")
 
     probs = inference_tiles(loader, model, device)
-    tiles, _, groups = rank(dataset, probs)
+    tiles, _, groups = rank(dataset, probs, args.threshold)
     pseudo_masks = generate_masks(dataset, tiles, groups)
 
     trainset = Maskset("data/training.h5", pseudo_masks)
@@ -174,9 +176,6 @@ def train(total_epochs, last_epoch, test_every, model, crit_seg, optimizer, sche
     :param crit_seg:        分割损失函数
     :param optimizer:       优化器
     :param scheduler:       学习率调度器
-    :param threshold:       验证模型所用的置信度
-    :param tiles_per_pos:   在**单个阳性细胞**上选取的图像块数 (topk_pos = tiles_per_pos * label)
-    :param topk_neg:        每次在阴性细胞图像上选取的 top-k tile **总数**
     :param output_path:     保存模型文件和训练数据结果的目录
     """
 
@@ -197,6 +196,11 @@ def train(total_epochs, last_epoch, test_every, model, crit_seg, optimizer, sche
         model.setmode("seg")
 
         for epoch in range(1 + last_epoch, total_epochs + 1):
+
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
 
             loss = train_seg(train_loader, epoch, total_epochs, model, device, crit_seg, optimizer,
                              scheduler, delta)

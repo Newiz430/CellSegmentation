@@ -103,9 +103,19 @@ class MILResNet(nn.Module):
         self.map_size = 1  # 1, 5?
         self.avgpool_image = nn.AdaptiveAvgPool2d((self.map_size, self.map_size))
         self.maxpool_image = nn.AdaptiveMaxPool2d((self.map_size, self.map_size))
-        self.fc_image_cls = nn.Sequential(
+        # self.fc_image_cls = nn.Sequential(
+        #     nn.Flatten(),
+        #     nn.Linear(512 * self.map_size * self.map_size * block.expansion, 7)
+        # )
+        self.fc_image_cls_new = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 7)
+            nn.BatchNorm1d(512 * self.map_size * self.map_size * block.expansion),
+            nn.Dropout(p=0.25),
+            nn.ReLU(inplace=True),
+            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 64),
+            nn.BatchNorm1d(64),
+            nn.Dropout(),
+            nn.Linear(64, 7)
         )
         # 回归层参考了 AlexNet 的结构（弃用）
         self.fc_image_reg_old1 = nn.Sequential(
@@ -138,33 +148,36 @@ class MILResNet(nn.Module):
 
         self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
 
-        # 金字塔层级
-        self.pyramid_10 = nn.Sequential(
-            nn.Conv2d(512 * expansion, 128, kernel_size=1, stride=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        )
-        self.pyramid_19 = nn.Sequential(
-            nn.Conv2d(256 * expansion, 128, kernel_size=1, stride=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        )
-        self.pyramid_38 = nn.Sequential(
-            nn.Conv2d(128 * expansion, 128, kernel_size=1, stride=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        )
+        # # 金字塔层级
+        # self.pyramid_10 = nn.Sequential(
+        #     nn.Conv2d(512 * expansion, 128, kernel_size=1, stride=1),
+        #     nn.BatchNorm2d(128),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
+        # )
+        # self.pyramid_19 = nn.Sequential(
+        #     nn.Conv2d(256 * expansion, 128, kernel_size=1, stride=1),
+        #     nn.BatchNorm2d(128),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
+        # )
+        # self.pyramid_38 = nn.Sequential(
+        #     nn.Conv2d(128 * expansion, 128, kernel_size=1, stride=1),
+        #     nn.BatchNorm2d(128),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
+        # )
 
         # 图像上采样卷积层
         self.upsample1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         self.upsample2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         self.upsample3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
 
-        self.upsample_conv1 = self.upsample_conv(2 * self.image_channels, self.image_channels)
-        self.upsample_conv2 = self.upsample_conv(2 * self.image_channels, self.image_channels)
+        # self.upsample_conv1 = self.upsample_conv(2 * self.image_channels, self.image_channels)
+        # self.upsample_conv2 = self.upsample_conv(2 * self.image_channels, self.image_channels)
+        self.upconv1 = self.upsample_conv(512 * expansion, 256 * expansion)
+        self.upconv2 = self.upsample_conv(256 * expansion, 128 * expansion)
+        self.upconv3 = self.upsample_conv(128 * expansion, 64 * expansion)
 
         self.seg_out_conv = nn.Conv2d(self.image_channels, 1, kernel_size=1)
 
@@ -223,10 +236,10 @@ class MILResNet(nn.Module):
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 128, 38, 38]
-        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 256, 19, 19]
-        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 512, 10, 10]
+        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
+        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
+        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
+        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
 
         return x4, x3, x2, x1
 
@@ -244,7 +257,7 @@ class MILResNet(nn.Module):
         elif self.mode == "image":
 
             # image_cls & image_reg
-            out = self.avgpool_image(x4) + self.maxpool_image(x4)  # [n, 512, ?, ?]
+            out = self.avgpool_image(x4) + self.maxpool_image(x4)  # [n, 2048, ?, ?]
             out_cls = self.fc_image_cls(out)  # [n, 7]
             out_reg = self.fc_image_reg(out)  # [n, 1]
 
@@ -253,21 +266,21 @@ class MILResNet(nn.Module):
         elif self.mode == "segment":
 
             # image_seg
-            out_x4 = self.pyramid_10(x4)  # out_x4: [n, 32, 10, 10]
-            out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
-            out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
+            # out_x4 = self.pyramid_10(x4)  # out_x4: [n, 32, 10, 10]
+            # out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
+            # out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
 
-            # out_seg = F.interpolate(out_x4.clone(), size=19, mode="bilinear", align_corners=True)
-            out_seg = self.upsample1(out_x4.clone())
-            out_seg = torch.cat([out_seg, out_x3], dim=1)  # 连接两层，输出 [n, 64, 19, 19]
-            out_seg = self.upsample_conv1(out_seg)  # 融合 x4 和 x3 的特征，输出 [n, 32, 19, 19]
-            # out_seg = F.interpolate(out_seg.clone(), size=38, mode="bilinear", align_corners=True)
+            out_seg = self.upsample1(x4.clone())  # out_seg: [n, 2048, 20, 20]
+            out_seg = self.upconv1(out_seg)  # out_seg: [n, 1024, 20, 20]
+            out_seg = torch.cat([out_seg, x3], dim=1)  # 连接两层，输出 [n, 64, 19, 19]
+
             out_seg = self.upsample2(out_seg)
-            out_seg = torch.cat([out_seg, out_x2], dim=1)  # 连接两层，输出 [n, 64, 38, 38]
-            out_seg = self.upsample_conv2(out_seg)  # [n, 32, 38, 38]
+            out_seg = self.upconv2(out_seg)  # [n, 32, 38, 38]
+            out_seg = torch.cat([out_seg, x2], dim=1)  # 连接两层，输出 [n, 64, 38, 38]
 
             out_seg = self.upsample3(out_seg)  # [n, 32, 75, 75]
-
+            out_seg = self.upconv3(out_seg)  # [n, 32, 38, 38]
+            out_seg = torch.cat([out_seg, x1], dim=1)  # 连接两层，输出 [n, 64, 75, 75]
             out_seg = self.seg_out_conv(out_seg)  # [n, 1, 75, 75]
 
             return out_seg

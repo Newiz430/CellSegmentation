@@ -45,8 +45,8 @@ parser.add_argument('-t', '--tile_size', type=int, default=32,
                     help='size of a certain tile (default: 32)')
 parser.add_argument('-i', '--interval', type=int, default=20,
                     help='interval between adjacent tiles (default: 20)')
-parser.add_argument('-c', '--threshold', type=float, default=0.88,
-                    help='minimal prob for tiles to show in generating segmentation masks (default: 0.88)')
+parser.add_argument('-c', '--threshold', type=float, default=0.95,
+                    help='minimal prob for tiles to show in generating segmentation masks (default: 0.95)')
 parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -57,11 +57,6 @@ parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FIL
                     help='continue training from a checkpoint.pth')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
-
-# if torch.cuda.is_available():
-#     torch.cuda.manual_seed(1)
-# else:
-#     torch.manual_seed(1)
 
 max_acc = 0
 verbose = True
@@ -198,6 +193,11 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, optimizer, sche
         print("PT.II - tile classifier training ...")
         model.setmode("tile")
         for epoch in range(1 + last_epoch, total_epochs + 1):
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
+
             trainset.setmode(1)
 
             probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)

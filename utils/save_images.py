@@ -5,6 +5,8 @@ import csv
 import numpy as np
 from PIL import Image
 import cv2
+from skimage import io, morphology
+from scipy import ndimage as ndi
 
 import torch
 
@@ -32,23 +34,27 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
 def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/pseudomask"):
     """把预测得到的阳性细胞区域做成二值掩码。"""
 
-    pseudo_masks = np.zeros((len(dataset), *dataset.image_size))
+    pseudo_masks = np.zeros((len(dataset.images), *dataset.image_size)).astype(np.uint8)
 
     for i in range(len(groups)):
 
-        tile_mask = np.ones((dataset.tile_size, dataset.tile_size))
+        tile_mask = np.ones((dataset.tile_size, dataset.tile_size)).astype(np.uint8)
         grid = list(map(int, tiles[i]))
 
         pseudo_masks[groups[i]][grid[0]: grid[0] + dataset.tile_size,
                                 grid[1]: grid[1] + dataset.tile_size] = tile_mask
 
-    if save_masks:
-        for i in tqdm(range(len(dataset)), desc="saving mask images"):
+    for i in tqdm(range(len(dataset.images)), desc="saving mask images"):
+        # remove small patches with low connectivity
+        pseudo_masks[i] = morphology.remove_small_objects(pseudo_masks[i], min_size=32*32)
+        pseudo_masks[i] = ndi.binary_fill_holes(pseudo_masks[i] > 0)
+
+        if save_masks:
             Image.fromarray(np.uint8(dataset.images[i])).save(
-                os.path.join(output_path, "rgb/{}.png".format(groups[i] + 1)),
+                os.path.join(output_path, "rgb/{}.png".format(i + 1)),
                 optimize=True)
             Image.fromarray(np.uint8(pseudo_masks[i] * 255)).save(
-                os.path.join(output_path, "mask/{}.png".format(groups[i] + 1)),
+                os.path.join(output_path, "mask/{}.png".format(i + 1)),
                 optimize=True)
     print("Original images & masks saved in {}.".format(output_path))
 

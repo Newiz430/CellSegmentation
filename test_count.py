@@ -32,7 +32,7 @@ if not os.path.exists(args.output):
 print('Loading Dataset ...')
 imageSet_test = LystoTestset("data/test.h5")
 test_loader = DataLoader(imageSet_test, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
-                         pin_memory=False)
+                         pin_memory=True)
 
 f = torch.load(args.model)
 model = encoders[f['encoder']]
@@ -51,19 +51,54 @@ def test_count(testset, cls_limit, output_path):
     fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
         now, epoch)), 'w', newline="")
     w = csv.writer(fconv, delimiter=',')
-    w.writerow(['id', 'count', 'category'])
+    w.writerow(['id', 'count', 'organ'])
 
     print('Start testing ...')
 
     testset.setmode("count")
     model.setmode("image")
-    output = inference_image(test_loader, model, device, mode='test', cls_limit=cls_limit)
-    for i, y in enumerate(zip(*output), start=1):
-        w.writerow([i, y[1], y[0]])
+    output = inference_image(test_loader, model, device, mode='test', cls_limit=cls_limit)[1]
+    # for i, y in enumerate(zip(*output), start=1):
+    #     w.writerow([i, y[1], testset.organs[i - 1], y[0]])
+    for i, y in enumerate(output, start=1):
+        w.writerow([i, y, testset.organs[i - 1]])
+    fconv.close()
 
+
+def test_count_cls(testset, output_path):
+    from inference import inference_image_cls
+    global epoch, model
+
+    fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+        now, epoch)), 'w', newline="")
+    w = csv.writer(fconv, delimiter=',')
+    w.writerow(['id', 'count', 'organ'])
+
+    print('Start testing ...')
+
+    testset.setmode("count")
+    model.setmode("image")
+    output = inference_image_cls(test_loader, model, device, mode='test')
+    # for i, y in enumerate(zip(*output), start=1):
+    #     w.writerow([i, y[1], testset.organs[i - 1], y[0]])
+    for i, y in enumerate(output, start=1):
+        if y == 0:
+            y = 0
+        elif y == 1:
+            y = 3
+        elif y == 2:
+            y = 8
+        elif y == 3:
+            y = 15
+        elif y == 4:
+            y = 30
+        elif y == 5:
+            y = 100
+        w.writerow([i, y, testset.organs[i - 1]])
     fconv.close()
 
 
 if __name__ == "__main__":
 
-    test_count(imageSet_test, args.cls_limit, output_path=args.output)
+    # test_count(imageSet_test, args.cls_limit, output_path=args.output)
+    test_count_cls(imageSet_test, output_path=args.output)

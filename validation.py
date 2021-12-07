@@ -30,11 +30,11 @@ def validation_tile(valset, probs, tiles_per_pos, threshold):
 def validation_image(valset, categories, counts):
     """image mode 的验证，probs 应为二维数组，第二维的大小为 7。"""
 
-    map = calc_map(F.one_hot(torch.tensor(categories, dtype=torch.int64), num_classes=6).numpy(),
-                   F.one_hot(torch.tensor(valset.cls_labels, dtype=torch.int64), num_classes=6).numpy())
+    # map = calc_map(F.one_hot(torch.tensor(categories, dtype=torch.int64), num_classes=6).numpy(),
+    #                F.one_hot(torch.tensor(valset.cls_labels, dtype=torch.int64), num_classes=6).numpy())
     mse = F.mse_loss(torch.from_numpy(counts), torch.tensor(valset.labels))
     # mse = weighted_mse_loss(torch.from_numpy(counts), torch.tensor(valset.labels))
     score = qwk(counts, valset.labels)
 
-    return map, mse.item(), score
-
+    # return map, mse.item(), score
+    return 0, mse.item(), score

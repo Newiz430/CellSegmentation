@@ -52,11 +52,6 @@ parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FIL
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
 
-# if torch.cuda.is_available():
-#     torch.cuda.manual_seed(1)
-# else:
-#     torch.manual_seed(1)
-
 max_acc = 0
 verbose = True
 now = int(time.time())
@@ -148,6 +143,141 @@ if args.resume:
     scheduler.load_state_dict(checkpoint['scheduler'])
 
 
+def train_cls(total_epochs, last_epoch, test_every, model, crit_cls, optimizer, scheduler,
+              output_path):
+    from train import train_image_cls
+    from inference import inference_image_cls
+    global device, now
+
+    # open output file
+    fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
+    fconv.write('epoch,image_cls_loss\n')
+    fconv.close()
+    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+
+    print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
+
+    validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
+    start = int(time.time())
+    with SummaryWriter() as writer:
+
+        print("PT.I - image classifier training ...")
+        model.setmode("image")
+        for epoch in range(1 + last_epoch, total_epochs + 1):
+
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
+
+            trainset.setmode(5)
+
+            loss = train_image_cls(train_loader, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler)
+
+            print("image cls loss: {:.4f}".format(loss))
+            fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'a')
+            fconv.write('{},{}\n'.format(epoch, loss))
+            fconv.close()
+
+            writer.add_scalar("image cls loss", loss, epoch)
+
+            # Validating step
+            if validate(epoch, test_every):
+                print('Validating ...')
+
+                # image validating
+                valset.setmode(4)
+                categories = inference_image_cls(val_loader, model, device, epoch, total_epochs)
+
+                regconv = open(os.path.join(output_path, '{}-category-e{}.csv'.format(
+                    now, epoch)), 'w', newline="")
+                w = csv.writer(regconv, delimiter=',')
+                w.writerow(['id', 'organ', 'label', 'category', 'cat_label', 'loss'])
+                for i, c in enumerate(categories):
+                    w.writerow([i + 1, valset.organs[i], valset.labels[i], c, valset.cls_labels[i],
+                                np.abs(c - valset.cls_labels[i])])
+                regconv.close()
+
+            save_model(epoch, model, optimizer, scheduler, output_path, prefix='cls_pt1')
+
+    end = int(time.time())
+    print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
+
+
+def train_reg(total_epochs, last_epoch, test_every, model, crit_reg, optimizer, scheduler,
+              output_path):
+    from train import train_image_reg
+    from inference import inference_image_reg
+    global device, now
+
+    # open output file
+    fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
+    fconv.write('epoch,image_reg_loss\n')
+    fconv.close()
+    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+    if test_every <= args.epochs:
+        fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
+        fconv.write('epoch,mse,qwk\n')
+        fconv.close()
+    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
+
+    print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
+
+    validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
+    start = int(time.time())
+    with SummaryWriter() as writer:
+
+        print("PT.I - image classifier training ...")
+        model.setmode("image")
+        for epoch in range(1 + last_epoch, total_epochs + 1):
+
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
+
+            trainset.setmode(5)
+
+            loss = train_image_reg(train_loader, epoch, total_epochs, model, device, crit_reg, optimizer, scheduler)
+
+            print("image reg loss: {:.4f}".format(loss))
+            fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'a')
+            fconv.write('{},{}\n'.format(epoch, loss))
+            fconv.close()
+
+            writer.add_scalar("image reg loss", loss, epoch)
+
+            # Validating step
+            if validate(epoch, test_every):
+                print('Validating ...')
+
+                # image validating
+                valset.setmode(4)
+                counts = inference_image_reg(val_loader, model, device, epoch, total_epochs)
+
+                regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+                    now, epoch)), 'w', newline="")
+                w = csv.writer(regconv, delimiter=',')
+                w.writerow(['id', 'organ', 'label', 'count', 'category label', 'loss'])
+                for i, count in enumerate(np.round(counts).astype(int)):
+                    w.writerow([i + 1, valset.organs[i], valset.labels[i], count, valset.cls_labels[i],
+                                np.abs(count - valset.labels[i])])
+                regconv.close()
+
+                metrics_i = validation_image(valset, [], counts)
+                print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
+                fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
+                fconv.write('{},{},{},{}\n'.format(epoch, *metrics_i))
+                fconv.close()
+
+                add_scalar_metrics(writer, epoch, metrics_i)
+
+            save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
+
+    end = int(time.time())
+    print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
+
+
 def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optimizer, scheduler,
           output_path):
     """pt.1: image assessment training.
@@ -187,6 +317,12 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
         print("PT.I - image assessment training ...")
         model.setmode("image")
         for epoch in range(1 + last_epoch, total_epochs + 1):
+
+            if device.type == 'cuda':
+                torch.cuda.manual_seed(epoch)
+            else:
+                torch.manual_seed(epoch)
+
             trainset.setmode(5)
 
             loss = train_image(train_loader, epoch, total_epochs, model, device, crit_cls, crit_reg,
@@ -198,7 +334,7 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
             fconv.write('{},{},{},{}\n'.format(epoch, *loss))
             fconv.close()
 
-            add_scalar_loss(writer, epoch, loss, ['image', 'total'])
+            add_scalar_loss(writer, epoch, loss)
 
             # Validating step
             if validate(epoch, test_every):
@@ -231,7 +367,7 @@ def train(total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, optim
     print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
 
 
-def save_model(epoch, model, optimizer, scheduler, output_path):
+def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
     """用 .pth 格式保存模型。"""
 
     obj = {
@@ -242,11 +378,10 @@ def save_model(epoch, model, optimizer, scheduler, output_path):
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
-    torch.save(obj, os.path.join(output_path, 'pt1_{}epochs.pth'.format(epoch)))
+    torch.save(obj, os.path.join(output_path, '{}_{}epochs.pth'.format(prefix, epoch)))
 
 
 def add_scalar_loss(writer, epoch, losses):
-
     writer.add_scalar("image cls loss", losses[0], epoch)
     writer.add_scalar("image reg loss", losses[1], epoch)
     writer.add_scalar("image loss", losses[2], epoch)
@@ -272,3 +407,28 @@ if __name__ == "__main__":
           scheduler=scheduler,
           output_path=args.output
           )
+
+    # train_cls(total_epochs=args.epochs,
+    #           last_epoch=last_epoch,
+    #           test_every=args.test_every,
+    #           model=model,
+    #           crit_cls=crit_cls,
+    #           optimizer=optimizer,
+    #           scheduler=scheduler,
+    #           output_path=args.output
+    #           )
+    # optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
+    # scheduler = schedulers[args.scheduler](optimizer,
+    #                                        last_epoch=last_epoch_for_scheduler,
+    #                                        **scheduler_kwargs[args.scheduler]) \
+    #     if args.scheduler is not None else None
+    #
+    # train_reg(total_epochs=args.epochs,
+    #           last_epoch=last_epoch,
+    #           test_every=args.test_every,
+    #           model=model,
+    #           crit_reg=crit_reg,
+    #           optimizer=optimizer,
+    #           scheduler=scheduler,
+    #           output_path=args.output
+    #           )
