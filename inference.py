@@ -124,3 +124,19 @@ def inference_image_reg(loader, model, device, epoch=None, total_epochs=None, mo
             nums = torch.cat((nums, output_reg), dim=0)  # nums: [len(dataset)]
 
     return nums.numpy()
+
+
+def inference_seg(loader, model, device, mode='train'):
+
+    model.eval()
+
+    masks = []
+    with torch.no_grad():
+        seg_bar = tqdm(loader, desc="image segmenting")
+        for i, data in enumerate(seg_bar):
+            output = model(data.to(device))
+            if mode == 'test':
+                output = F.softmax(output)
+            masks.append(output.cpu().numpy())
+
+    return masks

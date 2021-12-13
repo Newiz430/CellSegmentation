@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from metrics import calc_err, calc_map, qwk
-from train import weighted_mse_loss
+from train import weighted_mse
 
 def validation_tile(valset, probs, tiles_per_pos, threshold):
     """tile mode 的验证"""

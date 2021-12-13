@@ -1,5 +1,6 @@
 import warnings
 import os
+import sys
 import argparse
 import time
 import csv
@@ -69,113 +70,9 @@ args = parser.parse_args()
 
 max_acc = 0
 verbose = True
-now = int(time.time())
-
-# data setup
-if args.tile_only or args.image_only:
-    single_branch = 'tile_only' if args.tile_only else 'image_only'
-else:
-    single_branch = 'tile+image'
-print("Training settings: ")
-print("Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
-      .format(single_branch, 'GPU' if torch.cuda.is_available() else 'CPU',
-              args.encoder, args.epochs,
-              'Validate every {} epoch(s)'.format(args.test_every) if args.test_every <= args.epochs else 'No validation',
-              args.lr, args.output))
-if not args.image_only:
-    print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"
-          .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
-if not args.tile_only:
-    print("Image batch size: {}".format(args.image_batch_size))
-if not os.path.exists(args.output):
-    os.mkdir(args.output)
-
-print('Loading Dataset ...')
-kfold = None if args.test_every > args.epochs else 10
-trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold, num_of_imgs=0)
-valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False, kfold=kfold)
-
-collate_fn = default_collate
-# TODO: how can I split the training step for distributed parallel training?
-train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
-val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
-train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
-                                  num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_tile = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
-                                        num_workers=args.workers, sampler=train_sampler, pin_memory=True)
-train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
-                                         num_workers=args.workers, sampler=train_sampler, pin_memory=True,
-                                         collate_fn=collate_fn)
-val_loader_tile = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
-                             sampler=val_sampler, pin_memory=True)
-val_loader_image = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
-                              sampler=val_sampler, pin_memory=True)
-
-# model setup
-model = encoders[args.encoder]
-# 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
-
-crit_cls = nn.CrossEntropyLoss()
-crit_reg = nn.MSELoss()
-# crit_reg = WeightedMSELoss()
-crit_seg = None # TODO: CE?
-last_epoch = 0
-last_epoch_for_scheduler = -1
-
-if dist.is_nccl_available() and args.distributed:
-    print('\nNCCL is available. Setup distributed parallel training with {} devices...\n'
-          .format(torch.cuda.device_count()))
-    dist.init_process_group(backend='nccl', world_size=1)
-    device = torch.device("cuda", args.local_rank)
-    model.to(device)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
-else:
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-    model.to(device)
-
-optimizer_params = {'params': model.parameters(),
-                    'initial_lr': args.lr}
-optimizers = {
-    'SGD': optim.SGD([optimizer_params], lr=args.lr, momentum=0.9, weight_decay=1e-4),
-    'Adam': optim.Adam([optimizer_params], lr=args.lr, weight_decay=1e-4)
-}
-schedulers = {
-    'OneCycleLR': OneCycleLR, # note that last_epoch means last iteration number here
-    'ExponentialLR': ExponentialLR,
-    'CosineAnnealingWarmRestarts': CosineAnnealingWarmRestarts,
-}
-scheduler_kwargs = {
-    'OneCycleLR': {
-        'max_lr': args.lr,
-        'epochs': args.epochs,
-        'steps_per_epoch': len(train_loader_backward_image),
-    },
-    'ExponentialLR': {
-        'gamma': 0.9,
-    },
-    'CosineAnnealingWarmRestarts': {
-        'T_0': 5,
-    }
-}
-
-optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
-scheduler = schedulers[args.scheduler](optimizer,
-                                       last_epoch=last_epoch_for_scheduler,
-                                       **scheduler_kwargs[args.scheduler]) \
-    if args.scheduler is not None else None
-
-if args.resume:
-    checkpoint = torch.load(args.resume)
-    last_epoch = checkpoint['epoch']
-    last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-    model.load_state_dict(checkpoint['state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    scheduler.load_state_dict(checkpoint['scheduler'])
 
 
-def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, crit_reg, crit_seg,
+def train(single_branch, total_epochs, last_epoch, test_every, model, device, crit_cls, crit_reg, crit_seg,
           optimizer, scheduler, threshold, tiles_per_pos, topk_neg, output_path):
     """one training epoch = tile mode -> image mode
 
@@ -184,6 +81,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
     :param last_epoch:      上一次迭代的次数（当继续训练时）
     :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
+    :param device:          模型所在的设备
     :param crit_cls:        分类损失函数
     :param crit_reg:        回归损失函数
     :param crit_seg:        分割损失函数
@@ -214,153 +112,164 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, crit_cls, 
     start = int(time.time())
     with SummaryWriter() as writer:
         for epoch in range(1 + last_epoch, total_epochs + 1):
+            try:
 
-            if device.type == 'cuda':
-                torch.cuda.manual_seed(epoch)
-            else:
-                torch.manual_seed(epoch)
+                if device.type == 'cuda':
+                    torch.cuda.manual_seed(epoch)
+                else:
+                    torch.manual_seed(epoch)
 
-            # Training tile-mode only
-            if single_branch == 'tile_only':
+                # Training tile-mode only
+                if single_branch == 'tile_only':
 
-                # Forwarding step
-                trainset.setmode(1)
-                model.setmode("tile")
-
-                probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
-                sample(trainset, probs, tiles_per_pos, topk_neg)
-
-                trainset.setmode(3)
-                loss = train_tile(train_loader_backward_tile, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler)
-                print("tile loss: {:.4f}".format(loss))
-                fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
-                fconv.write('{},{}\n'.format(epoch, loss))
-                fconv.close()
-
-                add_scalar_loss(writer, epoch, loss, ['tile'])
-
-                # Validating step
-                if validate(epoch, test_every):
-                    valset.setmode(1)
-                    print('Validating ...')
-
-                    probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
-                    metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
-                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
-
-                    fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{}\n'.format(epoch, *metrics_t))
-                    fconv.close()
-
-                    add_scalar_metrics(writer, epoch, metrics_t, 'tile')
-
-                save_model(epoch, model, "tile", optimizer, scheduler, output_path)
-
-            # Training image-mode only
-            elif single_branch == 'image_only':
-
-                trainset.setmode(5)
-                model.setmode("image")
-                beta = 1
-                gamma = 1
-
-                loss = train_image(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
-                                   crit_reg, optimizer, scheduler, beta, gamma)
-
-                print("image cls loss: {:.4f} | image reg loss: {:.4f} | image loss: {:.4f}"
-                      .format(*loss))
-                fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
-                fconv.write('{},,{},{},{}\n'.format(epoch, *loss))
-                fconv.close()
-
-                add_scalar_loss(writer, epoch, loss, ['image', 'total'])
-
-                # Validating step
-                if validate(epoch, test_every):
-                    print('Validating ...')
-
-                    # image validating
-                    valset.setmode(4)
-                    categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
-
-                    regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
-                        now, epoch)), 'w', newline="")
-                    w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'organ', 'label', 'count', 'category', 'loss'])
-                    for i, count in enumerate(counts):
-                        w.writerow([i + 1, valset.organs[i], valset.labels[i], count, valset.cls_labels[i],
-                                    np.abs(count - valset.labels[i])])
-                    regconv.close()
-
-                    metrics_i = validation_image(valset, categories, counts)
-                    print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
-                    fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},,,,{},{},{}\n'.format(epoch, *metrics_i))
-                    fconv.close()
-
-                    add_scalar_metrics(writer, epoch, metrics_i, 'image')
-
-                save_model(epoch, model, "image", optimizer, scheduler, output_path)
-
-            # Alternative training
-            else:
-                # Forwarding step
-                trainset.setmode(1)
-                model.setmode("tile")
-                probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
-                sample(trainset, probs, tiles_per_pos, topk_neg)
-
-                trainset.setmode(2)
-                # if epoch == total_epochs:
-                #     trainset.visualize_bboxes()  # tile visualize testing
-                alpha = 1.
-                beta = 1.
-                gamma = 1.
-                delta = 1.
-                loss = train_alternative(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
-                                         crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
-
-                print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | image seg loss: {:.4f} | image loss: {:.4f}"
-                      .format(*loss))
-                fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
-                fconv.write('{},{},{},{},{},{}\n'.format(epoch, *loss))
-                fconv.close()
-
-                add_scalar_loss(writer, epoch, loss, ['tile', 'image', 'seg', 'total'])
-
-                # Validating step
-                if validate(epoch, test_every):
-                    valset.setmode(1)
+                    # Forwarding step
+                    trainset.setmode(1)
                     model.setmode("tile")
-                    print('Validating ...')
 
-                    probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
-                    metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
-                    print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
+                    probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
+                    sample(trainset, probs, tiles_per_pos, topk_neg)
 
-                    # image validating
-                    valset.setmode(4)
-                    model.setmode("image")
-                    categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
-
-                    regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
-                        now, epoch)), 'w', newline="")
-                    w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'label', 'count', 'loss'])
-                    for i, count in enumerate(counts):
-                        w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
-                    regconv.close()
-
-                    metrics_i = validation_image(valset, categories, counts)
-                    print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
-                    fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
+                    trainset.setmode(3)
+                    loss = train_tile(train_loader_backward_tile, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler, 1)
+                    print("tile loss: {:.4f}".format(loss))
+                    fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
+                    fconv.write('{},{}\n'.format(epoch, loss))
                     fconv.close()
 
-                    add_scalar_metrics(writer, epoch, metrics_t, 'tile')
-                    add_scalar_metrics(writer, epoch, metrics_i, 'image')
+                    add_scalar_loss(writer, epoch, loss, ['tile'])
 
-                save_model(epoch, model, 'alternative', optimizer, scheduler, output_path)
+                    # Validating step
+                    if validate(epoch, test_every):
+                        valset.setmode(1)
+                        print('Validating ...')
+
+                        probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
+                        metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
+                        print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
+
+                        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
+                        fconv.write('{},{},{},{}\n'.format(epoch, *metrics_t))
+                        fconv.close()
+
+                        add_scalar_metrics(writer, epoch, metrics_t, 'tile')
+
+                    save_model(epoch, model, "tile", optimizer, scheduler, output_path)
+
+                # Training image-mode only
+                elif single_branch == 'image_only':
+
+                    trainset.setmode(5)
+                    model.setmode("image")
+                    beta = 1
+                    gamma = 1
+
+                    loss = train_image(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
+                                       crit_reg, optimizer, scheduler, beta, gamma)
+
+                    print("image cls loss: {:.4f} | image reg loss: {:.4f} | image loss: {:.4f}"
+                          .format(*loss))
+                    fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
+                    fconv.write('{},,{},{},{}\n'.format(epoch, *loss))
+                    fconv.close()
+
+                    add_scalar_loss(writer, epoch, loss, ['image', 'total'])
+
+                    # Validating step
+                    if validate(epoch, test_every):
+                        print('Validating ...')
+
+                        # image validating
+                        valset.setmode(4)
+                        categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
+
+                        regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+                            now, epoch)), 'w', newline="")
+                        w = csv.writer(regconv, delimiter=',')
+                        w.writerow(['id', 'organ', 'label', 'count', 'category', 'loss'])
+                        for i, count in enumerate(counts):
+                            w.writerow([i + 1, valset.organs[i], valset.labels[i], count, valset.cls_labels[i],
+                                        np.abs(count - valset.labels[i])])
+                        regconv.close()
+
+                        metrics_i = validation_image(valset, categories, counts)
+                        print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
+                        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
+                        fconv.write('{},,,,{},{},{}\n'.format(epoch, *metrics_i))
+                        fconv.close()
+
+                        add_scalar_metrics(writer, epoch, metrics_i, 'image')
+
+                    save_model(epoch, model, "image", optimizer, scheduler, output_path)
+
+                # Alternative training
+                else:
+                    # Forwarding step
+                    trainset.setmode(1)
+                    model.setmode("tile")
+                    probs = inference_tiles(train_loader_forward, model, device, epoch, total_epochs)
+                    sample(trainset, probs, tiles_per_pos, topk_neg)
+
+                    trainset.setmode(2)
+                    # if epoch == total_epochs:
+                    #     trainset.visualize_bboxes()  # tile visualize testing
+                    alpha = 1.
+                    beta = 1.
+                    gamma = 1.
+                    delta = 1.
+                    loss = train_alternative(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
+                                             crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
+
+                    print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | "
+                          "image seg loss: {:.4f} | image loss: {:.4f}".format(*loss))
+                    fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'a')
+                    fconv.write('{},{},{},{},{},{}\n'.format(epoch, *loss))
+                    fconv.close()
+
+                    add_scalar_loss(writer, epoch, loss, ['tile', 'image', 'seg', 'total'])
+
+                    # Validating step
+                    if validate(epoch, test_every):
+                        valset.setmode(1)
+                        model.setmode("tile")
+                        print('Validating ...')
+
+                        probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
+                        metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
+                        print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
+
+                        # image validating
+                        valset.setmode(4)
+                        model.setmode("image")
+                        categories, counts = inference_image(val_loader_image, model, device, epoch, total_epochs)
+
+                        regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+                            now, epoch)), 'w', newline="")
+                        w = csv.writer(regconv, delimiter=',')
+                        w.writerow(['id', 'label', 'count', 'loss'])
+                        for i, count in enumerate(counts):
+                            w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
+                        regconv.close()
+
+                        metrics_i = validation_image(valset, categories, counts)
+                        print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
+                        fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
+                        fconv.write('{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
+                        fconv.close()
+
+                        add_scalar_metrics(writer, epoch, metrics_t, 'tile')
+                        add_scalar_metrics(writer, epoch, metrics_i, 'image')
+
+                    save_model(epoch, model, 'alternative', optimizer, scheduler, output_path)
+
+            except KeyboardInterrupt:
+                if single_branch == 'tile_only':
+                    save_model(epoch, model, "tile", optimizer, scheduler, output_path)
+                elif single_branch == 'image_only':
+                    save_model(epoch, model, "image", optimizer, scheduler, output_path)
+                else:
+                    save_model(epoch, model, 'alternative', optimizer, scheduler, output_path)
+                print("\nTraining interrupted at epoch {}. Model saved in \'{}\'.".format(epoch, output_path))
+                sys.exit(0)
 
     end = int(time.time())
     print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
@@ -416,12 +325,118 @@ def add_scalar_metrics(writer, epoch, metrics, mode):
 
 
 if __name__ == "__main__":
+    # data setup
+    if args.tile_only or args.image_only:
+        single_branch = 'tile_only' if args.tile_only else 'image_only'
+    else:
+        single_branch = 'tile+image'
+    print("Training settings: ")
+    print(
+        "Training Mode: {} | Device: {} | Encoder: {} | {} epoch(s) in total | {} | Initial LR: {} | Output directory: {}"
+        .format(single_branch, 'GPU' if torch.cuda.is_available() else 'CPU',
+                args.encoder, args.epochs,
+                'Validate every {} epoch(s)'.format(
+                    args.test_every) if args.test_every <= args.epochs else 'No validation',
+                args.lr, args.output))
+    if not args.image_only:
+        print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {} |"
+              .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
+    if not args.tile_only:
+        print("Image batch size: {}".format(args.image_batch_size))
+    if not os.path.exists(args.output):
+        os.mkdir(args.output)
+
+    print('Loading Dataset ...')
+    kfold = None if args.test_every > args.epochs else 10
+    trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold,
+                            num_of_imgs=0)
+    valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False,
+                          kfold=kfold)
+
+    collate_fn = default_collate
+    # TODO: how can I split the training step for distributed parallel training?
+    train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
+    val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
+    train_loader_forward = DataLoader(trainset, batch_size=args.tile_batch_size, shuffle=True,
+                                      num_workers=args.workers, sampler=train_sampler, pin_memory=True)
+    train_loader_backward_tile = train_loader_forward
+    train_loader_backward_image = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True,
+                                             num_workers=args.workers, sampler=train_sampler, pin_memory=True,
+                                             collate_fn=collate_fn)
+    val_loader_tile = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
+                                 sampler=val_sampler, pin_memory=True)
+    val_loader_image = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+                                  sampler=val_sampler, pin_memory=True)
+
+    # model setup
+    model = encoders[args.encoder]
+    # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
+
+    crit_cls = nn.CrossEntropyLoss()
+    crit_reg = nn.MSELoss()
+    # crit_reg = WeightedMSELoss()
+    crit_seg = None  # TODO: CE?
+    last_epoch = 0
+    last_epoch_for_scheduler = -1
+
+    if dist.is_nccl_available() and args.distributed:
+        print('\nNCCL is available. Setup distributed parallel training with {} devices...\n'
+              .format(torch.cuda.device_count()))
+        dist.init_process_group(backend='nccl', world_size=1)
+        device = torch.device("cuda", args.local_rank)
+        model.to(device)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    else:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+        model.to(device)
+
+    optimizer_params = {'params': model.parameters(),
+                        'initial_lr': args.lr}
+    optimizers = {
+        'SGD': optim.SGD([optimizer_params], lr=args.lr, momentum=0.9, weight_decay=1e-4),
+        'Adam': optim.Adam([optimizer_params], lr=args.lr, weight_decay=1e-4)
+    }
+    schedulers = {
+        'OneCycleLR': OneCycleLR,  # note that last_epoch means last iteration number here
+        'ExponentialLR': ExponentialLR,
+        'CosineAnnealingWarmRestarts': CosineAnnealingWarmRestarts,
+    }
+    scheduler_kwargs = {
+        'OneCycleLR': {
+            'max_lr': args.lr,
+            'epochs': args.epochs,
+            'steps_per_epoch': len(train_loader_backward_image),
+        },
+        'ExponentialLR': {
+            'gamma': 0.9,
+        },
+        'CosineAnnealingWarmRestarts': {
+            'T_0': 5,
+        }
+    }
+
+    optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
+    scheduler = schedulers[args.scheduler](optimizer,
+                                           last_epoch=last_epoch_for_scheduler,
+                                           **scheduler_kwargs[args.scheduler]) \
+        if args.scheduler is not None else None
+
+    if args.resume:
+        checkpoint = torch.load(args.resume)
+        last_epoch = checkpoint['epoch']
+        last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
 
     train(single_branch=single_branch,
           total_epochs=args.epochs,
           last_epoch=last_epoch,
           test_every=args.test_every,
           model=model,
+          device=device,
           crit_cls=crit_cls,
           crit_reg=crit_reg,
           crit_seg=crit_seg,

@@ -107,7 +107,7 @@ class MILResNet(nn.Module):
         #     nn.Flatten(),
         #     nn.Linear(512 * self.map_size * self.map_size * block.expansion, 7)
         # )
-        self.fc_image_cls_new = nn.Sequential(
+        self.fc_image_cls = nn.Sequential(
             nn.Flatten(),
             nn.BatchNorm1d(512 * self.map_size * self.map_size * block.expansion),
             nn.Dropout(p=0.25),
@@ -175,11 +175,12 @@ class MILResNet(nn.Module):
 
         # self.upsample_conv1 = self.upsample_conv(2 * self.image_channels, self.image_channels)
         # self.upsample_conv2 = self.upsample_conv(2 * self.image_channels, self.image_channels)
-        self.upconv1 = self.upsample_conv(512 * expansion, 256 * expansion)
-        self.upconv2 = self.upsample_conv(256 * expansion, 128 * expansion)
-        self.upconv3 = self.upsample_conv(128 * expansion, 64 * expansion)
+        self.upconv1 = self.upsample_conv(512 * expansion, 128 * expansion)
+        self.upconv2 = self.upsample_conv(256 * expansion, 64 * expansion)
+        self.upconv3 = self.upsample_conv(128 * expansion, 32 * expansion)
+        self.upconv4 = self.upsample_conv(64 * expansion, 64, mid_channels=64 if expansion == 1 else 32 * expansion)
 
-        self.seg_out_conv = nn.Conv2d(self.image_channels, 1, kernel_size=1)
+        self.seg_out_conv = nn.Conv2d(self.image_channels, 2, kernel_size=1)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -270,18 +271,25 @@ class MILResNet(nn.Module):
             # out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
             # out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
 
-            out_seg = self.upsample1(x4.clone())  # out_seg: [n, 2048, 20, 20]
-            out_seg = self.upconv1(out_seg)  # out_seg: [n, 1024, 20, 20]
-            out_seg = torch.cat([out_seg, x3], dim=1)  # 连接两层，输出 [n, 64, 19, 19]
+            out_seg = F.interpolate(x4.clone(), size=19, mode="bilinear", align_corners=True)  # out_seg: [n, 2048, 19, 19]
+            # out_seg = self.upsample1(x4.clone())
+            out_seg = self.upconv1(out_seg)  # out_seg: [n, 512, 19, 19]
+            out_seg = torch.cat([out_seg, x3], dim=1)  # 连接两层，输出 [n, 1024, 19, 19]
 
-            out_seg = self.upsample2(out_seg)
-            out_seg = self.upconv2(out_seg)  # [n, 32, 38, 38]
-            out_seg = torch.cat([out_seg, x2], dim=1)  # 连接两层，输出 [n, 64, 38, 38]
+            out_seg = F.interpolate(out_seg, size=38, mode="bilinear", align_corners=True)  # [n, 1024, 38, 38]
+            # out_seg = self.upsample2(out_seg)
+            out_seg = self.upconv2(out_seg)  # [n, 256, 38, 38]
+            out_seg = torch.cat([out_seg, x2], dim=1)  # 连接两层，输出 [n, 512, 38, 38]
 
-            out_seg = self.upsample3(out_seg)  # [n, 32, 75, 75]
-            out_seg = self.upconv3(out_seg)  # [n, 32, 38, 38]
-            out_seg = torch.cat([out_seg, x1], dim=1)  # 连接两层，输出 [n, 64, 75, 75]
-            out_seg = self.seg_out_conv(out_seg)  # [n, 1, 75, 75]
+            out_seg = F.interpolate(out_seg, size=75, mode="bilinear", align_corners=True)  # [n, 512, 75, 75]
+            # out_seg = self.upsample3(out_seg)
+            out_seg = self.upconv3(out_seg)  # [n, 128, 75, 75]
+            out_seg = torch.cat([out_seg, x1], dim=1)  # 连接两层，输出 [n, 256, 75, 75]
+
+            out_seg = F.interpolate(out_seg, size=150, mode="bilinear", align_corners=True) # [n, 256, 150, 150]
+            out_seg = self.upconv4(out_seg)  # [n, 64, 150, 150]
+            out_seg = F.interpolate(out_seg, size=299, mode="bilinear", align_corners=True)  # [n, 64, 299, 299]
+            out_seg = self.seg_out_conv(out_seg)  # [n, 1, 299, 299]
 
             return out_seg
 
@@ -289,14 +297,16 @@ class MILResNet(nn.Module):
             raise Exception("Something wrong in setmode.")
 
     def setmode(self, mode):
+        """
+        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
+        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
+        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
+        """
         self.mode = mode
 
 
 def MILresnet18(pretrained=False, **kwargs):
-    """Constructs a ResNet-18 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
+
     model = MILResNet('resnet18', BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
@@ -304,10 +314,7 @@ def MILresnet18(pretrained=False, **kwargs):
 
 
 def MILresnet34(pretrained=False, **kwargs):
-    """Constructs a ResNet-34 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
+
     model = MILResNet('resnet34', BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet34']), strict=False)
@@ -315,10 +322,7 @@ def MILresnet34(pretrained=False, **kwargs):
 
 
 def MILresnet50(pretrained=False, **kwargs):
-    """Constructs a ResNet-50 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
+
     model = MILResNet('resnet50', Bottleneck, [3, 4, 6, 3], expansion=4, **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)

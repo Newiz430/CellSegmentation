@@ -6,7 +6,10 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 from itertools import cycle
-from PIL import Image
+# from PIL import Image
+from skimage import io
+from openslide import OpenSlide
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
@@ -24,10 +27,12 @@ class LystoDataset(Dataset):
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
-        if filepath:
+        super(LystoDataset, self).__init__()
+
+        if os.path.exists(filepath):
             f = h5py.File(filepath, 'r')
         else:
-            raise FileNotFoundError("Invalid data file.")
+            raise FileNotFoundError("Invalid data directory.")
 
         if kfold is not None and kfold <= 0:
             raise Exception("Invalid k-fold cross-validation argument.")
@@ -35,13 +40,13 @@ class LystoDataset(Dataset):
         self.train = train
         self.kfold = kfold
         # self.visualize = False
-        self.organs = []            # 全切片来源，array ( 20000 )
-        self.images = []            # array ( 20000 * 299 * 299 * 3 )
-        self.labels = []            # 图像中的阳性细胞数目，array ( 20000 )
+        self.organs = []            # 全切片来源，list ( 20000 )
+        self.images = []            # list ( 20000 * 299 * 299 * 3 )
+        self.labels = []            # 图像中的阳性细胞数目，list ( 20000 )
         self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签
-        self.transformIDX = []      # 数据增强的类别，array (  )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
+        self.transformIDX = []      # 数据增强的类别，list (  )
+        self.tileIDX = []           # 每个 tile 对应的图像编号，list ( 20000 * n )
+        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -111,6 +116,14 @@ class LystoDataset(Dataset):
         self.mode = None
 
     def setmode(self, mode):
+        """
+        mode 1: instance inference mode, for top-k sampling -> tile (sampled from images), label
+        mode 2: alternative training mode (alternate tile training + image training per batch iteration)
+                -> (image, tiles sampled from which), (class, number, binary tile labels)
+        mode 3: tile-only training mode -> tile (from top-k training data), label
+        mode 4: image validating mode -> 3d image, class, number
+        mode 5: image-only training mode -> 4d image, class, number
+        """
         self.mode = mode
 
     # def visualize_bboxes(self):
@@ -134,7 +147,7 @@ class LystoDataset(Dataset):
 
         # organ = self.organs[idx]
 
-        # top-k 选取模式 (tile mode)
+        # top-k tile sampling mode
         if self.mode == 1:
             assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile inference. "
 
@@ -229,6 +242,8 @@ class LystoDataset(Dataset):
 
     def __len__(self):
 
+        assert self.mode is not None, "Something wrong in setmode."
+
         if self.mode == 1:
             assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
             return len(self.tileIDX)
@@ -243,24 +258,24 @@ class LystoDataset(Dataset):
 class LystoTestset(Dataset):
 
     def __init__(self, filepath, tile_size=None, interval=None, num_of_imgs=0):
-
         """
-        :param filepath:    hdf5数据文件路径
-        :param transform:   数据预处理方式
+        :param filepath:    数据文件路径 (hdf5)
         :param interval:    选取 tile 的间隔步长
         :param tile_size:   一个 tile 的边长
         :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
         """
 
-        if filepath:
+        super(LystoTestset, self).__init__()
+
+        if os.path.exists(filepath):
             f = h5py.File(filepath, 'r')
         else:
-            raise FileNotFoundError("Invalid data file.")
+            raise FileNotFoundError("Invalid data directory.")
 
-        self.organs = []            # 全切片来源，array ( 20000 )
-        self.images = []            # array ( 20000 * 299 * 299 * 3 )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，array ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，array ( 20000 * n * 2 )
+        self.organs = []            # 全切片来源，list ( 20000 )
+        self.images = []            # list ( 20000 * 299 * 299 * 3 )
+        self.tileIDX = []           # 每个 tile 对应的图像编号，list ( 20000 * n )
+        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -276,7 +291,6 @@ class LystoTestset(Dataset):
             self.images.append(img)
 
             if self.interval is not None and self.tile_size is not None:
-
                 t = get_tiles(img, self.interval, self.tile_size)
                 self.tiles_grid.extend(t)
                 self.tileIDX.extend([tileIDX] * len(t))
@@ -292,6 +306,10 @@ class LystoTestset(Dataset):
         self.mode = None
 
     def setmode(self, mode):
+        """
+        mode "tile":  instance mode, used in pseudo-mask heatmap generation -> tile (sampled from images)
+        mode "image": image assessment mode, used in cell counting -> image
+        """
         self.mode = mode
 
     def __getitem__(self, idx):
@@ -307,7 +325,7 @@ class LystoTestset(Dataset):
             return tile
 
         # test_count
-        elif self.mode == "count":
+        elif self.mode == "image":
             image = self.images[idx]
             image = self.transform(image)
 
@@ -320,7 +338,7 @@ class LystoTestset(Dataset):
         if self.mode == "tile":
             assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile mode. "
             return len(self.tileIDX)
-        elif self.mode == "count":
+        elif self.mode == "image":
             return len(self.images)
         else:
             raise Exception("Something wrong in setmode.")
@@ -330,6 +348,7 @@ class Maskset(Dataset):
 
     def __init__(self, filepath, mask_data):
 
+        super(Maskset, self).__init__()
         assert type(mask_data) in [np.ndarray, str], "Invalid data type. "
 
         if filepath:
@@ -349,8 +368,10 @@ class Maskset(Dataset):
 
         if isinstance(mask_data, str):
             for file in os.listdir(os.path.join(mask_data, 'mask')):
-                img = Image.open(os.path.join(mask_data, 'mask', file))
-                self.masks.append(np.asarray(img))
+                img = io.imread(os.path.join(mask_data, 'mask', file))
+                self.masks.append(img)
+                # img = Image.open(os.path.join(mask_data, 'mask', file))
+                # self.masks.append(np.asarray(img))
         else:
             self.masks = [torch.from_numpy(np.uint8(md)) for md in mask_data]
 
@@ -375,6 +396,69 @@ class Maskset(Dataset):
         return len(self.images)
 
 
+class MaskTestset(Dataset):
+
+    def __init__(self, filepath, num_of_imgs=0):
+
+        super(MaskTestset, self).__init__()
+
+        self.images = []            # list ( n * 3 * 299 * 299 )
+
+        if os.path.isdir(filepath):
+            for i, path in enumerate(os.listdir(filepath)):
+                if num_of_imgs != 0 and i == num_of_imgs:
+                    break
+                # TODO: sample patches
+                if path.endswith((".svs", ".tiff")):
+                    slide = OpenSlide(path)
+                    self.images.append(self.sample_patches(slide))
+                    slide.close()
+                elif path.endswith((".jpg", ".png")):
+                    img = io.imread(path).astype(np.uint8)
+                    self.images.append(self.sample_patches(img))
+                else:
+                    raise FileNotFoundError("Invalid data directory.")
+
+        elif os.path.isfile(filepath) and filepath.endswith(("h5", "hdf5")):
+            f = h5py.File(filepath, 'r')
+            for i, img in enumerate(f['x']):
+                # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
+                if num_of_imgs != 0 and i == num_of_imgs:
+                    break
+                self.images.append(img)
+        else:
+            raise FileNotFoundError("Invalid data directory.")
+
+        self.image_size = self.images[0].shape[0:2]
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+        self.mode = None
+
+    def setmode(self, mode):
+        """
+        mode "tile":  instance mode, used in pseudo-mask heatmap generation -> tile (sampled from images)
+        mode "image": whole image mode, used in cell counting & segmentation & detection -> image
+        """
+        self.mode = mode
+
+    def __getitem__(self, idx):
+
+        image = self.images[idx]
+        image = self.transform(image)
+
+        return image
+
+
+    def __len__(self):
+
+        return len(self.images)
+
+
 def get_tiles(image, interval, size):
     """
     在每张图片上生成 tile 实例。
@@ -386,7 +470,17 @@ def get_tiles(image, interval, size):
     tiles = []
     for x in np.arange(0, image.shape[0] - size + 1, interval):
         for y in np.arange(0, image.shape[1] - size + 1, interval):
-            tiles.append((x, y))  # n x 2
+            tiles.append((x, y))
+
+        if tiles[-1][1] + size != image.shape[1]:
+            tiles.append((x, image.shape[1] - size))
+
+    if tiles[-1][0] + size != image.shape[0]:
+        for y in np.arange(0, image.shape[1] - size + 1, interval):
+            tiles.append((image.shape[0] - size, y))
+
+        if tiles[-1][1] + size != image.shape[1]:
+            tiles.append((image.shape[0] - size, image.shape[1] - size))
 
     return tiles
 

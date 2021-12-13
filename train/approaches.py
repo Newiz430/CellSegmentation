@@ -2,9 +2,11 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
+from torch.nn import CrossEntropyLoss as CELoss
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import *
 
+from .loss import DiceLoss
 
 def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, gamma):
     """Tile training for one epoch.
@@ -56,8 +58,8 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     :param crit_reg:        回归损失函数
     :param optimizer:       优化器
     :param scheduler:       学习率调度器
-    :param beta:            image_cls_loss 系数
-    :param gamma:           image_reg_loss 系数
+    :param alpha:            image_cls_loss 系数
+    :param beta:           image_reg_loss 系数
     """
 
     # image training, dataset.mode = 5
@@ -171,7 +173,7 @@ def train_image_reg(loader, epoch, total_epochs, model, device, crit_reg, optimi
     return image_reg_loss
 
 
-def train_seg(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, delta):
+def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, delta):
 
     # segmentation training
     model.train()
@@ -182,11 +184,16 @@ def train_seg(loader, epoch, total_epochs, model, device, criterion, optimizer, 
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (image, mask, label) in enumerate(train_bar):
 
+        mask = mask.to(device, dtype=torch.float32)
         # label = label.to(device)
-        output = model(image.to(device))
+        output = model(image.to(device)).to(dtype=torch.float32)
         optimizer.zero_grad()
-        loss = criterion(output, mask.to(device)) * delta
-
+        # output: [n, 2, 299, 299]
+        # mask: [n, 299, 299]
+        loss = delta * (
+            CELoss()(output, mask.to(dtype=torch.int)) +
+            DiceLoss()(output, mask)
+        )
         loss.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):

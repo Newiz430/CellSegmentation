@@ -1,3 +1,3 @@
 from .approaches import *
 from .loss import MSELoss, WeightedMSELoss, DiceLoss
-from .loss import weighted_mse_loss
+from .loss import weighted_mse, dice_coef

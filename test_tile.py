@@ -10,22 +10,24 @@ from torch.utils.data import DataLoader
 
 from dataset import LystoTestset
 from model import encoders
-from inference import inference_tiles
+from inference import inference_tiles, inference_image
 from utils import heatmap
 
 now = int(time.time())
 
 parser = argparse.ArgumentParser(prog="test_tile.py", description='Patch heatmap evaluation')
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
-parser.add_argument('-b', '--batch_size', type=int, default=40960,
+parser.add_argument('-b', '--tile_batch_size', type=int, default=40960,
                     help='batch size of tiles (default: 40960)')
+parser.add_argument('-r', '--reg_limit', action='store_true',
+                    help='whether or not setting limitation on artifact patches by counting')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 # parser.add_argument('-k', '--topk', default=30, type=int,
 #                     help='top k tiles are assumed to be of the same class as the image (default: 10, standard MIL)')
 parser.add_argument('-i', '--interval', type=int, default=5,
                     help='sample interval of tiles (default: 5)')
-parser.add_argument('-p', '--tile_size', type=int, default=32,
+parser.add_argument('-t', '--tile_size', type=int, default=32,
                     help='size of each tile (default: 32)')
 parser.add_argument('-c', '--threshold', type=float, default=0.88,
                     help='minimal prob for tiles to show in heatmap (default: 0.88)')
@@ -35,29 +37,8 @@ parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now),
                     help='path of output details .csv file (default: ./output/<timestamp>)')
 args = parser.parse_args()
 
-print("Testing settings: ")
-print("Device: {} | Model: {} | Tiles batch size: {} | Tile size: {} | Interval: {} | Threshold: {} | Output directory: {}"
-      .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.batch_size, args.tile_size, args.interval, args.threshold, args.output))
-if not os.path.exists(args.output):
-    os.mkdir(args.output)
 
-print('Loading Dataset ...')
-imageSet_test = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
-test_loader = DataLoader(imageSet_test, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
-                         pin_memory=False)
-
-f = torch.load(args.model)
-model = encoders[f['encoder']]
-model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
-epoch = f['epoch']
-model.load_state_dict(f['state_dict'])
-
-os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-model.to(device)
-
-
-def test_tile(testset, output_path):
+def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
     """
     :param testset:         测试数据集
     :param batch_size:      Dataloader 打包的小 batch 大小
@@ -65,8 +46,6 @@ def test_tile(testset, output_path):
     :param model:           网络模型
     :param output_path:     保存模型文件的目录
     """
-
-    global epoch, model
 
     # 热图中各个 tile 的信息保存在 output_path/<timestamp>-pred-e<epoch>-p<tilesize>-i<interval>-c<threshold>.csv
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
@@ -99,8 +78,28 @@ def test_tile(testset, output_path):
 
     testset.setmode("tile")
     model.setmode("tile")
-    probs = inference_tiles(test_loader, model, device, mode='test')
+    probs = inference_tiles(loader, model, device, mode='test')
     tiles, probs, groups = rank(testset, probs)
+
+    # clear artifact images
+    if reg_limit:
+        reg_testset.setmode("image")
+        model.setmode("image")
+
+        fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
+            now, epoch)), 'w', newline="")
+        w = csv.writer(fconv, delimiter=',')
+        w.writerow(['id', 'count', 'organ'])
+
+        counts = inference_image(reg_loader, model, device, mode='test')[1]
+        for i, y in enumerate(counts, start=1):
+            w.writerow([i, y, reg_testset.organs[i - 1]])
+        fconv.close()
+
+        indices = np.select([counts != 0], [counts]).nonzero()[0]
+        tiles = tiles[indices]
+        probs = probs[indices]
+        groups = groups[indices]
 
     # 生成热图
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
@@ -111,4 +110,38 @@ def test_tile(testset, output_path):
 
 if __name__ == "__main__":
 
-    test_tile(imageSet_test, output_path=args.output)
+
+    print("Testing settings: ")
+    print("Device: {} | Model: {} | Tiles batch size: {} | Tile size: {} | Interval: {} | "
+          "Threshold: {} | Output directory: {}"
+          .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.tile_batch_size, args.tile_size,
+                  args.interval, args.threshold, args.output))
+    if not os.path.exists(args.output):
+        os.mkdir(args.output)
+
+    print('Loading Dataset ...')
+    testset = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
+    test_loader = DataLoader(testset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
+                             pin_memory=False)
+    reg_testset = LystoTestset("data/test.h5")
+    reg_loader = DataLoader(reg_testset, batch_size=64, shuffle=False, num_workers=args.workers,
+                             pin_memory=True)
+
+    f = torch.load(args.model)
+    model = encoders[f['encoder']]
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
+    epoch = f['epoch']
+    model.load_state_dict(f['state_dict'])
+    model.set_resnet_module_grads(False)
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+    model.to(device)
+
+    test_tile(test_loader,
+              model=model,
+              epoch=epoch,
+              reg_limit=args.reg_limit,
+              reg_loader=reg_loader,
+              output_path=args.output
+    )
