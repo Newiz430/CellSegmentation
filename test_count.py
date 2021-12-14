@@ -4,6 +4,7 @@ import time
 import csv
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import LystoTestset
@@ -34,7 +35,6 @@ def test_count(loader, model, epoch, cls_limit, output_path):
     print('Start testing ...')
 
     testset.setmode("image")
-    model.setmode("image")
     output = inference_image(loader, model, device, mode='test', cls_limit=cls_limit)[1]
     # for i, y in enumerate(zip(*output), start=1):
     #     w.writerow([i, y[1], testset.organs[i - 1], y[0]])
@@ -57,8 +57,10 @@ if __name__ == "__main__":
 
     f = torch.load(args.model)
     model = encoders[f['encoder']]
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
     model.load_state_dict(f['state_dict'])
+    model.setmode("image")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)

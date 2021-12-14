@@ -101,7 +101,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
         gamma = 1.
 
         print("PT.II - tile classifier training ...")
-        model.setmode("tile")
+
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
 
@@ -213,8 +213,7 @@ if __name__ == "__main__":
     # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
     model.load_state_dict(f['state_dict'])
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
-    # freeze resnet encoder
-    model.set_resnet_module_grads(False)
+    model.setmode("tile")
 
     crit_cls = nn.CrossEntropyLoss()
     last_epoch = 0

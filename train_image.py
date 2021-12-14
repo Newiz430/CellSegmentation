@@ -76,7 +76,6 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
     start = int(time.time())
     with SummaryWriter() as writer:
         print("PT.I - image classifier training ...")
-        model.setmode("image")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
                 if device.type == 'cuda':
@@ -146,7 +145,6 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
     with SummaryWriter() as writer:
 
         print("PT.I - image regression training ...")
-        model.setmode("image")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
 
@@ -238,7 +236,6 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
         beta = 1
 
         print("PT.I - image assessment training ...")
-        model.setmode("image")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
                 # if device.type == 'cuda':
@@ -354,6 +351,7 @@ if __name__ == "__main__":
 
     # model setup
     model = encoders[args.encoder]
+    model.setmode("image")
 
     crit_cls = nn.CrossEntropyLoss()
     crit_reg = nn.MSELoss()

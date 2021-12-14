@@ -28,8 +28,8 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
     for i, (data, label) in enumerate(train_bar):
         train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
 
-        output = model(data.to(device))
         optimizer.zero_grad()
+        output = model(data.to(device))
         loss = criterion(output, label.to(device)) * gamma  # CrossEntropy 本身携带了 softmax()
 
         loss.backward()
@@ -73,9 +73,8 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (data, label_cls, label_num) in enumerate(train_bar):
 
-        output = model(data.to(device))
-
         optimizer.zero_grad()
+        output = model(data.to(device))
 
         image_cls_loss_i = crit_cls(output[0], label_cls.to(device))
         image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
@@ -118,9 +117,8 @@ def train_image_cls(loader, epoch, total_epochs, model, device, crit_cls, optimi
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (data, label_cls, label_num) in enumerate(train_bar):
 
-        output = model(data.to(device))
-
         optimizer.zero_grad()
+        output = model(data.to(device))
 
         image_cls_loss_i = crit_cls(output[0], label_cls.to(device))
         image_cls_loss_i.backward()
@@ -151,9 +149,8 @@ def train_image_reg(loader, epoch, total_epochs, model, device, crit_reg, optimi
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (data, label_cls, label_num) in enumerate(train_bar):
 
-        output = model(data.to(device))
-
         optimizer.zero_grad()
+        output = model(data.to(device))
 
         image_reg_loss_i = crit_reg(output[1].squeeze(), label_num.to(device, dtype=torch.float32))
         image_reg_loss_i.backward()
@@ -186,8 +183,8 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, 
 
         mask = mask.to(device, dtype=torch.float32)
         # label = label.to(device)
-        output = model(image.to(device)).to(dtype=torch.float32)
         optimizer.zero_grad()
+        output = model(image.to(device)).to(dtype=torch.float32)
         # output: [n, 2, 299, 299]
         # mask: [n, 299, 299]
         loss = delta * (
@@ -247,8 +244,8 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
         # print("images pack size:", data[0].size())
         # print("tiles pack size:", data[1].size())
 
-        output = model(data[1].to(device))
         optimizer.zero_grad()
+        output = model(data[1].to(device))
 
         tile_loss_i = gamma * crit_cls(output, labels[2].to(device))
         tile_loss_i.backward()
@@ -260,9 +257,8 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
         # pt.2: image training
         model.setmode("image")
         model.train()
-        output = model(data[0].to(device))
-
         optimizer.zero_grad()
+        output = model(data[0].to(device))
 
         image_cls_loss_i = crit_cls(output[0], labels[0].to(device))
         image_reg_loss_i = crit_reg(output[1].squeeze(), labels[1].to(device, dtype=torch.float32))

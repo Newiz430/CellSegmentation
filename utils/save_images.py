@@ -67,7 +67,9 @@ def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/
 
 def preprocess(mask):
     # remove small patches with low connectivity
-    mask = morphology.remove_small_objects(mask, min_size=32 * 32)
+    mask = morphology.erosion(mask, footprint=morphology.square(3))
+    mask = morphology.erosion(mask, footprint=morphology.square(3))
+    mask = morphology.remove_small_objects(mask, min_size=16*16+1)
     mask = ndi.binary_fill_holes(mask > 0)
 
     return mask

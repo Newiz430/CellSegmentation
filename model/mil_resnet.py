@@ -81,6 +81,7 @@ class MILResNet(nn.Module):
 
     def __init__(self, encoder, block, layers, num_classes=1000, expansion=1):
         self.encoder_name = encoder
+        self.mode = None
 
         self.inplanes = 64
         super(MILResNet, self).__init__()
@@ -93,94 +94,58 @@ class MILResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
         # encoder 以下部分
-        self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
-        self.maxpool_tile = nn.AdaptiveMaxPool2d((1, 1))
-        self.fc_tile = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512 * block.expansion, num_classes)
-        )
-        self.map_size = 1  # 1, 5?
-        self.avgpool_image = nn.AdaptiveAvgPool2d((self.map_size, self.map_size))
-        self.maxpool_image = nn.AdaptiveMaxPool2d((self.map_size, self.map_size))
-        # self.fc_image_cls = nn.Sequential(
-        #     nn.Flatten(),
-        #     nn.Linear(512 * self.map_size * self.map_size * block.expansion, 7)
-        # )
-        self.fc_image_cls = nn.Sequential(
-            nn.Flatten(),
-            nn.BatchNorm1d(512 * self.map_size * self.map_size * block.expansion),
-            nn.Dropout(p=0.25),
-            nn.ReLU(inplace=True),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 64),
-            nn.BatchNorm1d(64),
-            nn.Dropout(),
-            nn.Linear(64, 7)
-        )
-        # 回归层参考了 AlexNet 的结构（弃用）
-        self.fc_image_reg_old1 = nn.Sequential(
-            nn.Flatten(),
-            nn.Dropout(),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(512, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 1),
-            nn.ReLU(inplace=True)
-        )
-        self.fc_image_reg_old2 = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 1),
-            nn.ReLU(inplace=True)
-        )
-        self.fc_image_reg = nn.Sequential(
-            nn.Flatten(),
-            nn.BatchNorm1d(512 * self.map_size * self.map_size * block.expansion),
-            nn.Dropout(p=0.25),
-            nn.ReLU(inplace=True),
-            nn.Linear(512 * self.map_size * self.map_size * block.expansion, 64),
-            nn.BatchNorm1d(64),
-            nn.Dropout(),
-            nn.Linear(64, 1),
-            nn.ReLU(inplace=True)
-        )
+        def init_tile_modules():
+            self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
+            self.maxpool_tile = nn.AdaptiveMaxPool2d((1, 1))
+            self.fc_tile = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(512 * block.expansion, num_classes)
+            )
 
-        self.image_channels = 32  # image mode 中金字塔卷积的输出通道数
+        def init_image_modules(map_size):
+            self.avgpool_image = nn.AdaptiveAvgPool2d((map_size, map_size))
+            self.maxpool_image = nn.AdaptiveMaxPool2d((map_size, map_size))
+            self.fc_image_cls = nn.Sequential(
+                nn.Flatten(),
+                nn.BatchNorm1d(512 * map_size * map_size * block.expansion),
+                nn.Dropout(p=0.25),
+                nn.ReLU(inplace=True),
+                nn.Linear(512 * map_size * map_size * block.expansion, 64),
+                nn.BatchNorm1d(64),
+                nn.Dropout(),
+                nn.Linear(64, 7)
+            )
+            self.fc_image_reg = nn.Sequential(
+                nn.Flatten(),
+                nn.BatchNorm1d(512 * map_size * map_size * block.expansion),
+                nn.Dropout(p=0.25),
+                nn.ReLU(inplace=True),
+                nn.Linear(512 * map_size * map_size * block.expansion, 64),
+                nn.BatchNorm1d(64),
+                nn.Dropout(),
+                nn.Linear(64, 1),
+                nn.ReLU(inplace=True)
+            )
 
-        # # 金字塔层级
-        # self.pyramid_10 = nn.Sequential(
-        #     nn.Conv2d(512 * expansion, 128, kernel_size=1, stride=1),
-        #     nn.BatchNorm2d(128),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        # )
-        # self.pyramid_19 = nn.Sequential(
-        #     nn.Conv2d(256 * expansion, 128, kernel_size=1, stride=1),
-        #     nn.BatchNorm2d(128),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        # )
-        # self.pyramid_38 = nn.Sequential(
-        #     nn.Conv2d(128 * expansion, 128, kernel_size=1, stride=1),
-        #     nn.BatchNorm2d(128),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(128, self.image_channels, kernel_size=1, stride=1)
-        # )
+        def init_seg_modules():
+            # 图像上采样卷积层
+            self.upsample1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.upsample2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.upsample3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
 
-        # 图像上采样卷积层
-        self.upsample1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-        self.upsample2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-        self.upsample3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.upconv1 = self.upsample_conv(512 * expansion, 128 * expansion)
+            self.upconv2 = self.upsample_conv(256 * expansion, 64 * expansion)
+            self.upconv3 = self.upsample_conv(128 * expansion, 32 * expansion)
+            self.upconv4 = self.upsample_conv(
+                64 * expansion, 64,
+                mid_channels=64 if expansion == 1 else 32 * expansion)
+            self.seg_out_conv = nn.Conv2d(64, 2, kernel_size=1)
 
-        # self.upsample_conv1 = self.upsample_conv(2 * self.image_channels, self.image_channels)
-        # self.upsample_conv2 = self.upsample_conv(2 * self.image_channels, self.image_channels)
-        self.upconv1 = self.upsample_conv(512 * expansion, 128 * expansion)
-        self.upconv2 = self.upsample_conv(256 * expansion, 64 * expansion)
-        self.upconv3 = self.upsample_conv(128 * expansion, 32 * expansion)
-        self.upconv4 = self.upsample_conv(64 * expansion, 64, mid_channels=64 if expansion == 1 else 32 * expansion)
-
-        self.seg_out_conv = nn.Conv2d(self.image_channels, 2, kernel_size=1)
+        init_tile_modules()
+        init_image_modules(map_size=1)
+        init_seg_modules()
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -231,18 +196,56 @@ class MILResNet(nn.Module):
         self.layer3.requires_grad_(requires_grad)
         self.layer4.requires_grad_(requires_grad)
 
-    def resnet_forward(self, x: torch.Tensor):
+    def set_tile_module_grads(self, requires_grad):
 
-        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
-        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
-        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
-        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
+        self.avgpool_tile.requires_grad_(requires_grad)
+        self.maxpool_tile.requires_grad_(requires_grad)
+        self.fc_tile.requires_grad_(requires_grad)
 
-        return x4, x3, x2, x1
+    def set_image_module_grads(self, requires_grad):
+
+        self.avgpool_image.requires_grad_(requires_grad)
+        self.maxpool_image.requires_grad_(requires_grad)
+        self.fc_image_cls.requires_grad_(requires_grad)
+        self.fc_image_reg.requires_grad_(requires_grad)
+
+    def set_seg_module_grads(self, requires_grad):
+
+        self.upsample1.requires_grad_(requires_grad)
+        self.upsample2.requires_grad_(requires_grad)
+        self.upsample3.requires_grad_(requires_grad)
+        self.upconv1.requires_grad_(requires_grad)
+        self.upconv2.requires_grad_(requires_grad)
+        self.upconv3.requires_grad_(requires_grad)
+        self.upconv4.requires_grad_(requires_grad)
+        self.seg_out_conv.requires_grad_(requires_grad)
+
+    def setmode(self, mode):
+        """
+        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
+        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
+        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
+        """
+
+        if mode == "tile":
+            self.set_resnet_module_grads(False)
+            self.set_tile_module_grads(True)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(False)
+        elif mode == "image":
+            self.set_resnet_module_grads(True)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(True)
+            self.set_seg_module_grads(False)
+        elif mode == "segment":
+            self.set_resnet_module_grads(False)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(True)
+        else:
+            raise Exception("Invalid mode: {}.".format(mode))
+
+        self.mode = mode
 
     def forward(self, x: torch.Tensor):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
@@ -296,13 +299,18 @@ class MILResNet(nn.Module):
         else:
             raise Exception("Something wrong in setmode.")
 
-    def setmode(self, mode):
-        """
-        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
-        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
-        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
-        """
-        self.mode = mode
+    def resnet_forward(self, x: torch.Tensor):
+
+        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
+        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
+        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
+        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
+        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
+
+        return x4, x3, x2, x1
 
 
 def MILresnet18(pretrained=False, **kwargs):

@@ -41,8 +41,6 @@ def test_seg(testset, threshold, output_path):
 
     print('Start testing ...')
 
-    testset.setmode("image")
-    model.setmode("image")
     masks = inference_seg(test_loader, model, device)
 
     save_images_with_masks(testset.images, masks, threshold, output_path)
@@ -72,6 +70,7 @@ if __name__ == "__main__":
     model = encoders[f['encoder']]
     epoch = f['epoch']
     model.load_state_dict(f['state_dict'])
+    model.setmode("segment")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)

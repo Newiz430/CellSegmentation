@@ -29,8 +29,8 @@ parser.add_argument('-i', '--interval', type=int, default=5,
                     help='sample interval of tiles (default: 5)')
 parser.add_argument('-t', '--tile_size', type=int, default=32,
                     help='size of each tile (default: 32)')
-parser.add_argument('-c', '--threshold', type=float, default=0.88,
-                    help='minimal prob for tiles to show in heatmap (default: 0.88)')
+parser.add_argument('-c', '--threshold', type=float, default=0.95,
+                    help='minimal prob for tiles to show in heatmap (default: 0.95)')
 parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
@@ -77,7 +77,6 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
     print('Start testing ...')
 
     testset.setmode("tile")
-    model.setmode("tile")
     probs = inference_tiles(loader, model, device, mode='test')
     tiles, probs, groups = rank(testset, probs)
 
@@ -86,15 +85,14 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
         reg_testset.setmode("image")
         model.setmode("image")
 
-        fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
-            now, epoch)), 'w', newline="")
-        w = csv.writer(fconv, delimiter=',')
-        w.writerow(['id', 'count', 'organ'])
+        with open(os.path.join(output_path, '{}-count-e{}.csv'.format(now, epoch)),
+                  'w', newline="") as f:
+            w = csv.writer(f, delimiter=',')
+            w.writerow(['id', 'count', 'organ'])
 
-        counts = inference_image(reg_loader, model, device, mode='test')[1]
-        for i, y in enumerate(counts, start=1):
-            w.writerow([i, y, reg_testset.organs[i - 1]])
-        fconv.close()
+            counts = inference_image(reg_loader, model, device, mode='test')[1]
+            for i, y in enumerate(counts, start=1):
+                w.writerow([i, y, reg_testset.organs[i - 1]])
 
         indices = np.select([counts != 0], [counts]).nonzero()[0]
         tiles = tiles[indices]
@@ -109,7 +107,6 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
 
 
 if __name__ == "__main__":
-
 
     print("Testing settings: ")
     print("Device: {} | Model: {} | Tiles batch size: {} | Tile size: {} | Interval: {} | "
@@ -132,7 +129,7 @@ if __name__ == "__main__":
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
     model.load_state_dict(f['state_dict'])
-    model.set_resnet_module_grads(False)
+    model.setmode("tile")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)

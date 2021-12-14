@@ -32,7 +32,7 @@ parser.add_argument('-b', '--tile_batch_size', type=int, default=40960,
                     help='batch size of tiles (useless in --skip_draw mode, default: 40960)')
 parser.add_argument('-i', '--interval', type=int, default=5,
                     help='sample interval of tiles (default: 5)')
-parser.add_argument('-p', '--tile_size', type=int, default=16,
+parser.add_argument('-t', '--tile_size', type=int, default=16,
                     help='size of each tile (default: 16)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64,
                     help='batch size of images (default: 64)')
@@ -85,7 +85,6 @@ def train(total_epochs, last_epoch, test_every, model, device, optimizer, schedu
         delta = 1
 
         print("PT.III - cell segmentation branch training ...")
-        model.setmode("segment")
 
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
@@ -180,8 +179,7 @@ if __name__ == "__main__":
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
     model.load_state_dict(f['state_dict'])
-    # freeze resnet encoder
-    model.set_resnet_module_grads(False)
+    model.setmode("segment")
 
     last_epoch = 0
     last_epoch_for_scheduler = -1
@@ -202,7 +200,7 @@ if __name__ == "__main__":
     if not args.skip_draw:
 
         dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, augment=False,
-                               kfold=None, num_of_imgs=100)
+                               kfold=None, num_of_imgs=0)
         loader = DataLoader(dataset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                             pin_memory=False)
         dataset.setmode(1)
@@ -210,6 +208,8 @@ if __name__ == "__main__":
 
         probs = inference_tiles(loader, model, device)
         tiles, _, groups = rank(dataset, probs, args.threshold)
+
+        # TODO: pseudomask limit
         pseudo_masks = generate_masks(dataset, tiles, groups)
 
         trainset = Maskset("data/training.h5", pseudo_masks)
