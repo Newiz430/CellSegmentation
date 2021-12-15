@@ -35,6 +35,7 @@ parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
                     help='path of output details .csv file (default: ./output/<timestamp>)')
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 args = parser.parse_args()
 
 
@@ -117,10 +118,11 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     print('Loading Dataset ...')
-    testset = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval, num_of_imgs=20)
+    testset = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval,
+                           num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
-    reg_testset = LystoTestset("data/test.h5")
+    reg_testset = LystoTestset("data/test.h5", num_of_imgs=20 if args.debug else 0)
     reg_loader = DataLoader(reg_testset, batch_size=64, shuffle=False, num_workers=args.workers,
                              pin_memory=True)
 
@@ -128,7 +130,7 @@ if __name__ == "__main__":
     model = encoders[f['encoder']]
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'])
+    model.load_state_dict(f['state_dict'], strict=False)
     model.setmode("tile")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)

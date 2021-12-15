@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from metrics import calc_err, calc_map, qwk
 from train import weighted_mse
 
-def validation_tile(valset, probs, tiles_per_pos, threshold):
+def evaluate_tile(valset, probs, tiles_per_pos, threshold):
     """tile mode 的验证"""
 
     val_groups = np.array(valset.tileIDX)
@@ -27,7 +27,7 @@ def validation_tile(valset, probs, tiles_per_pos, threshold):
     return err, fpr, fnr
 
 
-def validation_image(valset, categories, counts):
+def evaluate_image(valset, categories, counts):
     """image mode 的验证，probs 应为二维数组，第二维的大小为 7。"""
 
     # map = calc_map(F.one_hot(torch.tensor(categories, dtype=torch.int64), num_classes=6).numpy(),

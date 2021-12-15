@@ -19,7 +19,7 @@ from dataset import LystoDataset
 from model import encoders
 from inference import inference_image
 from train import train_image, WeightedMSELoss
-from validation import validation_image
+from evaluate import evaluate_image
 from utils import default_collate
 
 warnings.filterwarnings("ignore")
@@ -51,11 +51,9 @@ parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(n
                     help='saving directory of output file (default: ./checkpoint/<timestamp>)')
 parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
                     help='continue training from a checkpoint.pth')
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
-
-max_acc = 0
-verbose = True
 
 
 def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, optimizer, scheduler,
@@ -181,7 +179,7 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
                                     np.abs(count - valset.labels[i])])
                     regconv.close()
 
-                    metrics_i = validation_image(valset, [], counts)
+                    metrics_i = evaluate_image(valset, [], counts)
                     print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
                     fconv.write('{},{},{}\n'.format(epoch, *metrics_i[1:]))
@@ -273,7 +271,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
                                     np.abs(count - valset.labels[i])])
                     regconv.close()
 
-                    metrics_i = validation_image(valset, categories, counts)
+                    metrics_i = evaluate_image(valset, categories, counts)
                     print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
                     fconv.write('{},{},{},{}\n'.format(epoch, *metrics_i))
@@ -335,8 +333,8 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     kfold = None if args.test_every > args.epochs else 10
-    trainset = LystoDataset("data/training.h5", kfold=kfold, num_of_imgs=0)
-    valset = LystoDataset("data/training.h5", train=False, kfold=kfold)
+    trainset = LystoDataset("data/training.h5", kfold=kfold, num_of_imgs=100 if args.debug else 0)
+    valset = LystoDataset("data/training.h5", train=False, kfold=kfold, num_of_imgs=100 if args.debug else 0)
 
     collate_fn = default_collate
     # TODO: how can I split the training step for distributed parallel training?
@@ -351,6 +349,7 @@ if __name__ == "__main__":
 
     # model setup
     model = encoders[args.encoder]
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     model.setmode("image")
 
     crit_cls = nn.CrossEntropyLoss()
@@ -387,6 +386,8 @@ if __name__ == "__main__":
             'max_lr': args.lr,  # note that input lr means max_lr here
             'epochs': args.epochs,
             'steps_per_epoch': len(train_loader),
+            'div_factor': 5.0,  # initial lr = max_lr / div_factor
+            'pct_start': 0.3   # percent of steps in warm-up period
         },
         'ExponentialLR': {
             'gamma': 0.9,
@@ -406,7 +407,7 @@ if __name__ == "__main__":
         checkpoint = torch.load(args.resume)
         last_epoch = checkpoint['epoch']
         last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-        model.load_state_dict(checkpoint['state_dict'])
+        model.load_state_dict(checkpoint['state_dict'], strict=False)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 

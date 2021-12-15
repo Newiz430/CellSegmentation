@@ -4,6 +4,7 @@ import time
 import csv
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import MaskTestset
@@ -68,8 +69,9 @@ if __name__ == "__main__":
 
     f = torch.load(args.model)
     model = encoders[f['encoder']]
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'])
+    model.load_state_dict(f['state_dict'], strict=False)
     model.setmode("segment")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)

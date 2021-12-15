@@ -18,7 +18,7 @@ from dataset import LystoDataset
 from model import encoders
 from inference import *
 from train import *
-from validation import *
+from evaluate import *
 from utils import default_collate
 
 warnings.filterwarnings("ignore")
@@ -65,14 +65,12 @@ parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(n
                     help='saving directory of output file (default: ./checkpoint/<timestamp>)')
 parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
                     help='continue training from a checkpoint.pth')
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
 
-max_acc = 0
-verbose = True
 
-
-def train(single_branch, total_epochs, last_epoch, test_every, model, device, crit_cls, crit_reg, crit_seg,
+def train(single_branch, total_epochs, last_epoch, test_every, model, device, crit_cls, crit_reg,
           optimizer, scheduler, threshold, tiles_per_pos, topk_neg, output_path):
     """one training epoch = tile mode -> image mode
 
@@ -84,7 +82,6 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
     :param device:          模型所在的设备
     :param crit_cls:        分类损失函数
     :param crit_reg:        回归损失函数
-    :param crit_seg:        分割损失函数
     :param optimizer:       优化器
     :param scheduler:       学习率调度器
     :param threshold:       验证模型所用的置信度
@@ -92,8 +89,6 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
     :param topk_neg:        每次在阴性细胞图像上选取的 top-k tile **总数**
     :param output_path:     保存模型文件和训练数据结果的目录
     """
-
-    global device, now
 
     # open output file
     fconv = open(os.path.join(output_path, '{}-training.csv'.format(now)), 'w')
@@ -144,7 +139,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
                         print('Validating ...')
 
                         probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
-                        metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
+                        metrics_t = evaluate_tile(valset, probs_t, tiles_per_pos, threshold)
                         print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
 
                         fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
@@ -191,7 +186,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
                                         np.abs(count - valset.labels[i])])
                         regconv.close()
 
-                        metrics_i = validation_image(valset, categories, counts)
+                        metrics_i = evaluate_image(valset, categories, counts)
                         print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                         fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
                         fconv.write('{},,,,{},{},{}\n'.format(epoch, *metrics_i))
@@ -217,7 +212,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
                     gamma = 1.
                     delta = 1.
                     loss = train_alternative(train_loader_backward_image, epoch, total_epochs, model, device, crit_cls,
-                                             crit_reg, crit_seg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
+                                             crit_reg, optimizer, scheduler, threshold, alpha, beta, gamma, delta)
 
                     print("tile loss: {:.4f} | image cls loss: {:.4f} | image reg loss: {:.4f} | "
                           "image seg loss: {:.4f} | image loss: {:.4f}".format(*loss))
@@ -234,7 +229,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
                         print('Validating ...')
 
                         probs_t = inference_tiles(val_loader_tile, model, device, epoch, total_epochs)
-                        metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
+                        metrics_t = evaluate_tile(valset, probs_t, tiles_per_pos, threshold)
                         print('tile error: {} | tile FPR: {} | tile FNR: {}'.format(*metrics_t))
 
                         # image validating
@@ -250,7 +245,7 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
                             w.writerow([i + 1, valset.labels[i], count, count - valset.labels[i]])
                         regconv.close()
 
-                        metrics_i = validation_image(valset, categories, counts)
+                        metrics_i = evaluate_image(valset, categories, counts)
                         print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                         fconv = open(os.path.join(output_path, '{}-validation.csv'.format(now)), 'a')
                         fconv.write('{},{},{},{},{},{},{}\n'.format(epoch, *(metrics_t + metrics_i)))
@@ -349,9 +344,9 @@ if __name__ == "__main__":
     print('Loading Dataset ...')
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold,
-                            num_of_imgs=0)
+                            num_of_imgs=100 if args.debug else 0)
     valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False,
-                          kfold=kfold)
+                          kfold=kfold, num_of_imgs=100 if args.debug else 0)
 
     collate_fn = default_collate
     # TODO: how can I split the training step for distributed parallel training?
@@ -376,7 +371,6 @@ if __name__ == "__main__":
     crit_cls = nn.CrossEntropyLoss()
     crit_reg = nn.MSELoss()
     # crit_reg = WeightedMSELoss()
-    crit_seg = None  # TODO: CE?
     last_epoch = 0
     last_epoch_for_scheduler = -1
 
@@ -408,6 +402,8 @@ if __name__ == "__main__":
             'max_lr': args.lr,
             'epochs': args.epochs,
             'steps_per_epoch': len(train_loader_backward_image),
+            'div_factor': 25.0,
+            'pct_start': 0.3
         },
         'ExponentialLR': {
             'gamma': 0.9,
@@ -439,7 +435,6 @@ if __name__ == "__main__":
           device=device,
           crit_cls=crit_cls,
           crit_reg=crit_reg,
-          crit_seg=crit_seg,
           optimizer=optimizer,
           scheduler=scheduler,
           threshold=args.threshold,

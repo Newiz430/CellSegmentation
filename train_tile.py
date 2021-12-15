@@ -17,7 +17,7 @@ from dataset import LystoDataset
 from model import encoders
 from inference import inference_tiles, sample
 from train import train_tile
-from validation import validation_tile
+from evaluate import evaluate_tile
 
 warnings.filterwarnings("ignore")
 now = int(time.time())
@@ -49,7 +49,7 @@ parser.add_argument('-i', '--interval', type=int, default=20,
                     help='interval between adjacent tiles (default: 20)')
 parser.add_argument('-c', '--threshold', type=float, default=0.95,
                     help='minimal prob for tiles to show in generating heatmaps (default: 0.95)')
-parser.add_argument('--distributed', action="store_true",
+parser.add_argument('--distributed', action='store_true',
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0, mutually exclusive with --distributed)')
@@ -57,11 +57,9 @@ parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(n
                     help='saving directory of output file (default: ./checkpoint/<timestamp>)')
 parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
                     help='continue training from a checkpoint.pth')
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
-
-max_acc = 0
-verbose = True
 
 
 def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimizer, scheduler,
@@ -131,7 +129,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
                     print('Validating ...')
 
                     probs_t = inference_tiles(val_loader, model, device, epoch, total_epochs)
-                    metrics_t = validation_tile(valset, probs_t, tiles_per_pos, threshold)
+                    metrics_t = evaluate_tile(valset, probs_t, tiles_per_pos, threshold)
                     print('tile error: {} | tile FPR: {} | tile FNR: {}\n'.format(*metrics_t))
 
                     fconv = open(os.path.join(output_path, '{}-tile-validation.csv'.format(now)), 'a')
@@ -194,9 +192,9 @@ if __name__ == "__main__":
     print('Loading Dataset ...')
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold,
-                            num_of_imgs=0)
+                            num_of_imgs=100 if args.debug else 0)
     valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False,
-                          kfold=kfold)
+                          kfold=kfold, num_of_imgs=100 if args.debug else 0)
 
     # TODO: how can I split the training step for distributed parallel training?
     trainset.setmode(1)
@@ -211,8 +209,8 @@ if __name__ == "__main__":
     f = torch.load(args.model)
     model = encoders[f['encoder']]
     # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-    model.load_state_dict(f['state_dict'])
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
+    model.load_state_dict(f['state_dict'], strict=False)
     model.setmode("tile")
 
     crit_cls = nn.CrossEntropyLoss()
@@ -266,7 +264,7 @@ if __name__ == "__main__":
         checkpoint = torch.load(args.resume)
         last_epoch = checkpoint['epoch']
         last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-        model.load_state_dict(checkpoint['state_dict'])
+        model.load_state_dict(checkpoint['state_dict'], strict=False)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 

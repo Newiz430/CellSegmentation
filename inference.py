@@ -45,7 +45,10 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
 def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
 
+    # if mode == "train":
     model.eval()
+    # else:
+    #     model.train()
 
     # probs = torch.tensor(())
     # nums = torch.tensor(())

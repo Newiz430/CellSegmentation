@@ -103,18 +103,18 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 
     masks = np.zeros((len(testset.images), *testset.image_size)).astype(np.uint8)
 
-    for i in range(len(groups)):
+    for i, g in enumerate(groups):
         tile_mask = np.full((testset.tile_size, testset.tile_size), probs[i])
         grid = list(map(int, tiles[i]))
-        masks[groups[i]][grid[0]: grid[0] + testset.tile_size,
-        grid[1]: grid[1] + testset.tile_size] = tile_mask
+        masks[g][grid[0]: grid[0] + testset.tile_size,
+                 grid[1]: grid[1] + testset.tile_size] = tile_mask
         w = csv.writer(csv_file)
-        w.writerow([groups[i], '{}'.format(grid), probs[i]])
+        w.writerow([g, '{}'.format(grid), probs[i]])
 
-    for i in tqdm(range(len(testset.images)), desc="saving heatmaps"):
+    for i, img in tqdm(enumerate(testset.images), desc="saving heatmaps"):
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * masks[i]), cv2.COLORMAP_JET)
-        img = cv2.addWeighted(testset.images[i], 0.5, mask, 0.5, 0)
+        img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
         io.imsave(os.path.join(output_path, "test_{}.png".format(groups[i] + 1)), np.uint8(img))
 
     # count = 0

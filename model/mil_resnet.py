@@ -220,38 +220,31 @@ class MILResNet(nn.Module):
         self.upconv4.requires_grad_(requires_grad)
         self.seg_out_conv.requires_grad_(requires_grad)
 
-    def setmode(self, mode):
-        """
-        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
-        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
-        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
-        """
+    def resnet_forward(self, x: torch.Tensor):
 
-        if mode == "tile":
-            self.set_resnet_module_grads(False)
-            self.set_tile_module_grads(True)
-            self.set_image_module_grads(False)
-            self.set_seg_module_grads(False)
-        elif mode == "image":
-            self.set_resnet_module_grads(True)
-            self.set_tile_module_grads(False)
-            self.set_image_module_grads(True)
-            self.set_seg_module_grads(False)
-        elif mode == "segment":
-            self.set_resnet_module_grads(False)
-            self.set_tile_module_grads(False)
-            self.set_image_module_grads(False)
-            self.set_seg_module_grads(True)
+        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
+        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
+        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
+        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
+        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
+
+        return x4, x3, x2, x1
+
+    def forward(self, x: torch.Tensor, freeze_bn=False):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
+
+        # Set freeze_bn=True in tile training mode to freeze E(x) & Var(x) in BatchNorm2D(x).
+        # Otherwise, assessment results will decay as tile training propels.
+        if self.mode == "tile" and freeze_bn:
+            self.eval()
+            x4, x3, x2, x1 = self.resnet_forward(x)
+            self.train()
         else:
-            raise Exception("Invalid mode: {}.".format(mode))
+            x4, x3, x2, x1 = self.resnet_forward(x)
 
-        self.mode = mode
-
-    def forward(self, x: torch.Tensor):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
-
-        x4, x3, x2, x1 = self.resnet_forward(x)
-
-        if self.mode in "tile":
+        if self.mode == "tile":
 
             x = self.avgpool_tile(x4) + self.maxpool_tile(x4) # x: [nk, 512, 1, 1]
             x = self.fc_tile(x)  # x: [nk, 512]
@@ -299,18 +292,32 @@ class MILResNet(nn.Module):
         else:
             raise Exception("Something wrong in setmode.")
 
-    def resnet_forward(self, x: torch.Tensor):
+    def setmode(self, mode):
+        """
+        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
+        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
+        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
+        """
 
-        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
-        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
-        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
-        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
+        if mode == "tile":
+            self.set_resnet_module_grads(False)
+            self.set_tile_module_grads(True)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(False)
+        elif mode == "image":
+            self.set_resnet_module_grads(True)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(True)
+            self.set_seg_module_grads(False)
+        elif mode == "segment":
+            self.set_resnet_module_grads(False)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(True)
+        else:
+            raise Exception("Invalid mode: {}.".format(mode))
 
-        return x4, x3, x2, x1
+        self.mode = mode
 
 
 def MILresnet18(pretrained=False, **kwargs):

@@ -29,7 +29,7 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
         train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
 
         optimizer.zero_grad()
-        output = model(data.to(device))
+        output = model(data.to(device), freeze_bn=True)
         loss = criterion(output, label.to(device)) * gamma  # CrossEntropy 本身携带了 softmax()
 
         loss.backward()
@@ -205,7 +205,7 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, 
     return image_seg_loss
 
 
-def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, crit_seg, optimizer,
+def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, optimizer,
                       scheduler, threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
@@ -215,7 +215,6 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
     :param model:           网络模型
     :param crit_cls:        分类器损失函数
     :param crit_reg:        回归损失函数
-    :param crit_seg:        分割损失函数
     :param optimizer:       优化器
     :param scheduler:       学习率调度器
     :param alpha:           tile_loss 系数
@@ -280,10 +279,10 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
         # print("image data size:", data[0].size(0))
         # print("tile data size:", data[1].size(0))
 
+        # # train seg?
         # if (i + 1) % ((len(loader) + 1) // mini_epochs?) == 0:
-        #     train_seg(train_loader_forward, batch_size, epoch, total_epochs, model, device,
-        #     crit_seg, optimizer, threshold, save_masks=False)
-        #     # TODO: save masks of all data after n iterations
+        #     train_seg(train_loader_forward, epoch, total_epochs, model, device,
+        #     optimizer, scheduler, delta)
 
     if not (scheduler is None or isinstance(scheduler, (CyclicLR, OneCycleLR))):
         scheduler.step()

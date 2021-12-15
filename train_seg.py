@@ -57,6 +57,7 @@ parser.add_argument('-d', '--device', type=int, default=0,
 parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(now), metavar='OUTPUT/PATH',
                     help='saving directory of output file (default: ./checkpoint/<timestamp>)')
 parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 args = parser.parse_args()
 
 
@@ -178,7 +179,7 @@ if __name__ == "__main__":
     model = encoders[f['encoder']]
     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'])
+    model.load_state_dict(f['state_dict'], strict=False)
     model.setmode("segment")
 
     last_epoch = 0
@@ -200,7 +201,7 @@ if __name__ == "__main__":
     if not args.skip_draw:
 
         dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, augment=False,
-                               kfold=None, num_of_imgs=0)
+                               kfold=None, num_of_imgs=100 if args.debug else 0)
         loader = DataLoader(dataset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                             pin_memory=False)
         dataset.setmode(1)
