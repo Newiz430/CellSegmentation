@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import time
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -14,9 +15,8 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset import LystoDataset, Maskset
+from dataset import Maskset
 from model import encoders
-from inference import inference_tiles
 from train import train_seg
 from utils import generate_masks
 
@@ -28,14 +28,20 @@ parser = argparse.ArgumentParser(prog="train_seg.py", description='pt.3: cell se
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model in pt.1')
 parser.add_argument('--skip_draw', action='store_true',
                     help='skip binary mask generating step, using the images from data/pseudomask instead')
+parser.add_argument('-p', '--preprocess', action='store_true',
+                    help='whether or not processing result masks by morphological approaches '
+                         '(no use if --skip_draw is chosen)')
 parser.add_argument('-b', '--tile_batch_size', type=int, default=40960,
-                    help='batch size of tiles (useless in --skip_draw mode, default: 40960)')
+                    help='batch size of tiles (default: 40960, no use if --skip_draw is chosen)')
 parser.add_argument('-i', '--interval', type=int, default=5,
-                    help='sample interval of tiles (default: 5)')
+                    help='sample interval of tiles (default: 5, no use if --skip_draw is chosen)')
 parser.add_argument('-t', '--tile_size', type=int, default=16,
-                    help='size of each tile (default: 16)')
-parser.add_argument('-B', '--image_batch_size', type=int, default=64,
-                    help='batch size of images (default: 64)')
+                    help='size of each tile (default: 16, no use if --skip_draw is chosen)')
+parser.add_argument('-c', '--threshold', type=float, default=0.95,
+                    help='minimal prob for tiles to show in generating segmentation masks '
+                         '(default: 0.95, no use if --skip_draw is chosen)')
+parser.add_argument('-B', '--image_batch_size', type=int, default=48,
+                    help='batch size of images (default: 48)')
 parser.add_argument('-e', '--epochs', type=int, default=30,
                     help='total number of epochs to train (default: 30)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
@@ -45,28 +51,24 @@ parser.add_argument('-s', '--scheduler', type=str, default=None,
                          '[\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'] (default: None)')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
-parser.add_argument('--test_every', default=1, type=int,
-                    help='validate every (default: 1) epoch(s). To use all data for training, '
-                         'set this greater than --epochs')
-parser.add_argument('-c', '--threshold', type=float, default=0.95,
-                    help='minimal prob for tiles to show in generating segmentation masks (default: 0.95)')
 parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0, mutually exclusive with --distributed)')
 parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(now), metavar='OUTPUT/PATH',
                     help='saving directory of output file (default: ./checkpoint/<timestamp>)')
-parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
+parser.add_argument('-r', '--resume', type=str, default=None, metavar='MODEL/FILE/PATH',
+                    help='continue training from a checkpoint.pth')
 parser.add_argument('--debug', action='store_true', help='use little data for debugging')
+parser.add_argument('--local_rank', type=int, help=argparse.SUPPRESS)
 args = parser.parse_args()
 
 
-def train(total_epochs, last_epoch, test_every, model, device, optimizer, scheduler, output_path):
+def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_path):
     """pt.2: tile classifier training.
 
     :param total_epochs:    迭代总次数
     :param last_epoch:      上一次迭代的次数（当继续训练时）
-    :param test_every:      每验证一轮间隔的迭代次数
     :param model:           网络模型
     :param device:          模型所在的设备
     :param optimizer:       优化器
@@ -80,7 +82,6 @@ def train(total_epochs, last_epoch, test_every, model, device, optimizer, schedu
 
     print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
-    validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
     with SummaryWriter() as writer:
         delta = 1
@@ -89,10 +90,10 @@ def train(total_epochs, last_epoch, test_every, model, device, optimizer, schedu
 
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
-                if device.type == 'cuda':
-                    torch.cuda.manual_seed(epoch)
-                else:
-                    torch.manual_seed(epoch)
+                # if device.type == 'cuda':
+                #     torch.cuda.manual_seed(epoch)
+                # else:
+                #     torch.manual_seed(epoch)
 
                 loss = train_seg(train_loader, epoch, total_epochs, model, device, optimizer,
                                  scheduler, delta)
@@ -121,37 +122,23 @@ def train(total_epochs, last_epoch, test_every, model, device, optimizer, schedu
     print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
 
 
-def rank(dataset, probs, threshold):
-    """按概率对 tile 排序，便于与置信度进行比较。"""
-
-    groups = np.array(dataset.tileIDX)
-    tiles = np.array(dataset.tiles_grid)
-
-    order = np.lexsort((probs, groups))
-    groups = groups[order]
-    probs = probs[order]
-    tiles = tiles[order]
-
-    # index = np.empty(len(groups), 'bool')
-    # index[-topk:] = True
-    # index[:-topk] = groups[topk:] != groups[:-topk]
-    index = [prob > threshold for prob in probs]
-
-    return tiles[index], probs[index], groups[index]
-
-
-def save_model(epoch, model, optimizer, scheduler, output_path):
+def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt3'):
     """用 .pth 格式保存模型。"""
-
+    # save all params
+    state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
+                              if k.startswith(model.resnet_module_prefix +
+                                              model.image_module_prefix +
+                                              model.tile_module_prefix +
+                                              model.seg_module_prefix)})
     obj = {
         'mode': 'seg',
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': state_dict,
         'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
-    torch.save(obj, os.path.join(output_path, 'pt3_{}epochs.pth'.format(epoch)))
+    torch.save(obj, os.path.join(output_path, '{}_{}epochs.pth'.format(prefix, epoch)))
 
 
 def add_scalar_loss(writer, epoch, loss):
@@ -161,27 +148,27 @@ def add_scalar_loss(writer, epoch, loss):
 if __name__ == "__main__":
 
     print("Training settings: ")
-    print("Training Mode: {} | Device: {} | Model: {} | {} epoch(s) in total | "
-          "{} | Initial LR: {} | Output directory: {}"
+    print("Training Mode: {} | Device: {} | Model: {} | {} epoch(s) in total\n"
+          "No validation | Initial LR: {} | Output directory: {}"
           .format('tile + image (pt.3)', 'GPU' if torch.cuda.is_available() else 'CPU',
-                  args.model, args.epochs,
-                  'Validate every {} epoch(s)'.format(
-                      args.test_every) if args.test_every <= args.epochs else 'No validation',
-                  args.lr, args.output))
-    print("Tile batch size: {} | Tile size: {} | Stride: {} | Image batch size: {}"
-          .format(args.tile_batch_size, args.tile_size, args.interval, args.image_batch_size))
+                  args.model, args.epochs, args.lr, args.output))
+    if args.skip_draw:
+        print("Read pseudomasks from storage | Image batch size: {}".format(args.image_batch_size))
+    else:
+        print("Tile batch size: {} | Tile size: {} | Stride: {} | Image batch size: {}".format(
+            args.tile_batch_size, args.tile_size, args.interval, args.image_batch_size))
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
-    print('Generating masks using the pretrained model \'{}\' ...'.format(args.model))
-
     f = torch.load(args.model)
     model = encoders[f['encoder']]
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'], strict=False)
-    model.setmode("segment")
-
+    # load params of resnet encoder, tile head and image head only
+    model.load_state_dict(
+        OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                     model.image_module_prefix)}),
+        strict=False)
     last_epoch = 0
     last_epoch_for_scheduler = -1
 
@@ -197,8 +184,11 @@ if __name__ == "__main__":
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
         model.to(device)
 
-    kfold = None if args.test_every > args.epochs else 10
     if not args.skip_draw:
+        from dataset import LystoDataset
+        from inference import inference_tiles
+
+        print('Generating masks using the pretrained model \'{}\' ...'.format(args.model))
 
         dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, augment=False,
                                kfold=None, num_of_imgs=100 if args.debug else 0)
@@ -208,15 +198,49 @@ if __name__ == "__main__":
         model.setmode("tile")
 
         probs = inference_tiles(loader, model, device)
+
+        def rank(dataset, probs, threshold):
+            """按概率对 tile 排序，便于与置信度进行比较。"""
+
+            groups = np.array(dataset.tileIDX)
+            tiles = np.array(dataset.tiles_grid)
+
+            order = np.lexsort((probs, groups))
+            groups = groups[order]
+            probs = probs[order]
+            tiles = tiles[order]
+
+            index = [prob > threshold for prob in probs]
+
+            return tiles[index], probs[index], groups[index]
+
         tiles, _, groups = rank(dataset, probs, args.threshold)
 
-        # TODO: pseudomask limit
-        pseudo_masks = generate_masks(dataset, tiles, groups)
+        if args.preprocess:
+            from dataset import LystoTestset
+            from inference import inference_image
 
-        trainset = Maskset("data/training.h5", pseudo_masks)
+            # clear artifact images
+            limit_set = LystoTestset("data/training.h5", num_of_imgs=100 if args.debug else 0)
+            limit_loader = DataLoader(limit_set, batch_size=args.image_batch_size, shuffle=False,
+                                      num_workers=args.workers, pin_memory=True)
+
+            limit_set.setmode("image")
+            model.setmode("image")
+
+            counts = inference_image(limit_loader, model, device, mode='test')[1]
+
+            img_indices = np.select([counts != 0], [counts]).nonzero()[0]
+            indices = [i for i, g in enumerate(groups) if g in img_indices]
+            tiles = tiles[indices]
+            groups = groups[indices]
+
+        pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess)
+
+        trainset = Maskset("data/training.h5", pseudo_masks, num_of_imgs=100 if args.debug else 0)
 
     else:
-        trainset = Maskset("data/training.h5", "data/pseudomask")
+        trainset = Maskset("data/training.h5", "data/pseudomask", num_of_imgs=100 if args.debug else 0)
 
     train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,
@@ -253,9 +277,22 @@ if __name__ == "__main__":
                                            **scheduler_kwargs[args.scheduler]) \
         if args.scheduler is not None else None
 
+    if args.resume:
+        checkpoint = torch.load(args.resume)
+        last_epoch = checkpoint['epoch']
+        last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
+        # load all params
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in checkpoint['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix + model.seg_module_prefix)}),
+            strict=False)
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
+
+    model.setmode("segment")
     train(total_epochs=args.epochs,
           last_epoch=last_epoch,
-          test_every=args.test_every,
           model=model,
           device=device,
           optimizer=optimizer,

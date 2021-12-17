@@ -2,7 +2,7 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
-from torch.nn import CrossEntropyLoss as CELoss
+from torch.nn import BCELoss
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import *
 
@@ -186,10 +186,10 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, 
         optimizer.zero_grad()
         output = model(image.to(device)).to(dtype=torch.float32)
         # output: [n, 2, 299, 299]
-        # mask: [n, 299, 299]
+        # mask:   [n,    299, 299]
         loss = delta * (
-            CELoss()(output, mask.to(dtype=torch.int)) +
-            DiceLoss()(output, mask)
+            DiceLoss()(output, mask) +
+            BCELoss()(output[:, 0], mask)
         )
         loss.backward()
         optimizer.step()

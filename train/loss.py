@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from metrics import weighted_mse, dice_coef
 
 class MSELoss(nn.Module):
 
@@ -29,12 +29,23 @@ class WeightedMSELoss(nn.Module):
         return weighted_mse(inputs, targets, reduction=self.reduction)
 
 
+# def dice_loss(inputs: torch.Tensor, targets: torch.Tensor, epsilon=1e-6):
+#     # you need to extract dim [1] cuz input is like [n, 2, 300, 300] and target like [n, 300, 300]
+#     # dice_coef takes [300, 300] as input
+#     if inputs.ndim == 4:
+#         inputs = inputs[:, 0]
+#     dice = 0
+#     for i in range(inputs.size(0)):
+#         # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
+#         dice += dice_coef(inputs[i], targets[i], epsilon)
+#     return dice
+
+
 class DiceLoss(nn.Module):
 
     def __init__(self, epsilon=1e-6):
         super(DiceLoss, self).__init__()
         self.epsilon = epsilon
-
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
         # you need to extract dim [1] cuz input is like [n, 2, 300, 300] and target like [n, 300, 300]
@@ -43,31 +54,7 @@ class DiceLoss(nn.Module):
             inputs = inputs[:, 0]
 
         dice = 0
-        for i in range(inputs.size()[0]):
+        for i in range(inputs.size(0)):
             # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
             dice += dice_coef(inputs[i], targets[i], self.epsilon)
         return dice
-
-
-def weighted_mse(inputs, targets, reduction='mean'):
-    assert reduction in ('mean', 'sum'), "\'reduction\' must be one of (\'mean\', \'sum\'). "
-
-    # for count = 20 or more set weight = ln(count)
-    weights = targets.clone()
-    for i, w in enumerate(weights):
-        if torch.ge(w, 20):
-            weights[i] = torch.log(w) if torch.ge(w, 20) else 1
-
-    tmp = weights * (inputs - targets) ** 2
-    return torch.mean(tmp) if reduction == 'mean' else torch.sum(tmp)
-
-
-def dice_coef(inputs, targets, epsilon=1e-6):
-
-    assert inputs.dtype == targets.dtype, "Input & target vectors should have same dtype. "
-    inter = torch.dot(inputs.reshape(-1), targets.reshape(-1))  # 最后一维作点积
-    sets_sum = torch.sum(inputs) + torch.sum(targets)
-    if sets_sum.item() == 0:
-        sets_sum = 2 * inter
-
-    return (2 * inter + epsilon) / (sets_sum + epsilon)

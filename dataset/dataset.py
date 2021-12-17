@@ -346,7 +346,7 @@ class LystoTestset(Dataset):
 
 class Maskset(Dataset):
 
-    def __init__(self, filepath, mask_data):
+    def __init__(self, filepath, mask_data, num_of_imgs=0):
 
         super(Maskset, self).__init__()
         assert type(mask_data) in [np.ndarray, str], "Invalid data type. "
@@ -362,18 +362,27 @@ class Maskset(Dataset):
         self.labels = []
 
         for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
+
+            if num_of_imgs != 0 and i == num_of_imgs:
+                break
+
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
 
         if isinstance(mask_data, str):
             for file in os.listdir(os.path.join(mask_data, 'mask')):
+
+                if num_of_imgs != 0 and len(self.masks) == len(self.images):
+                    break
+
                 img = io.imread(os.path.join(mask_data, 'mask', file))
                 self.masks.append(img)
-                # img = Image.open(os.path.join(mask_data, 'mask', file))
-                # self.masks.append(np.asarray(img))
+
         else:
             self.masks = [torch.from_numpy(np.uint8(md)) for md in mask_data]
+            if num_of_imgs != 0:
+                self.masks = self.masks[:num_of_imgs]
 
         assert len(self.masks) == len(self.images), "Mismatched number of masks and RGB images."
 
@@ -439,20 +448,12 @@ class MaskTestset(Dataset):
         ])
         self.mode = None
 
-    def setmode(self, mode):
-        """
-        mode "tile":  instance mode, used in pseudo-mask heatmap generation -> tile (sampled from images)
-        mode "image": whole image mode, used in cell counting & segmentation & detection -> image
-        """
-        self.mode = mode
-
     def __getitem__(self, idx):
 
         image = self.images[idx]
         image = self.transform(image)
 
         return image
-
 
     def __len__(self):
 

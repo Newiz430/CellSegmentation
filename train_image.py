@@ -4,6 +4,7 @@ import sys
 import argparse
 import time
 import csv
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -31,8 +32,8 @@ parser.add_argument('-e', '--epochs', type=int, default=30,
                     help='total number of epochs to train (default: 30)')
 parser.add_argument('-E', '--encoder', type=str, default='resnet50',
                     help='structure of the shared encoder, [resnet18, resnet34, resnet50 (default)]')
-parser.add_argument('-B', '--image_batch_size', type=int, default=64,
-                    help='batch size of images (default: 64)')
+parser.add_argument('-B', '--image_batch_size', type=int, default=48,
+                    help='batch size of images (default: 48)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
@@ -58,7 +59,6 @@ args = parser.parse_args()
 
 def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, optimizer, scheduler,
               output_path):
-
     from train import train_image_cls
     from inference import inference_image_cls
 
@@ -289,13 +289,17 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
     end = int(time.time())
     print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
 
+
 def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
     """用 .pth 格式保存模型。"""
-
+    # save params of resnet encoder and image head only
+    state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
+                              if k.startswith(model.resnet_module_prefix +
+                                              model.image_module_prefix)})
     obj = {
         'mode': 'image',
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': state_dict,
         'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
@@ -349,7 +353,6 @@ if __name__ == "__main__":
 
     # model setup
     model = encoders[args.encoder]
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     model.setmode("image")
 
     crit_cls = nn.CrossEntropyLoss()
@@ -387,7 +390,7 @@ if __name__ == "__main__":
             'epochs': args.epochs,
             'steps_per_epoch': len(train_loader),
             'div_factor': 5.0,  # initial lr = max_lr / div_factor
-            'pct_start': 0.3   # percent of steps in warm-up period
+            'pct_start': 0.3  # percent of steps in warm-up period
         },
         'ExponentialLR': {
             'gamma': 0.9,
@@ -407,7 +410,11 @@ if __name__ == "__main__":
         checkpoint = torch.load(args.resume)
         last_epoch = checkpoint['epoch']
         last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-        model.load_state_dict(checkpoint['state_dict'], strict=False)
+        # load params of resnet encoder and image head only
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in checkpoint['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+            strict=False)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
@@ -449,4 +456,3 @@ if __name__ == "__main__":
     #           scheduler=scheduler,
     #           output_path=args.output
     #           )
-

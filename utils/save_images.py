@@ -3,10 +3,8 @@ from tqdm import tqdm
 import csv
 
 import numpy as np
-# from PIL import Image
 import cv2
 from skimage import io, morphology
-from scipy import ndimage as ndi
 
 
 def save_images(dataset, prefix, output_path, num_of_imgs=0):
@@ -28,10 +26,9 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
         name = '{}_{}_{}cells.png'.format(prefix, i + 1, dataset.labels[i]) if hasattr(dataset, 'labels') \
             else '{}_{}.png'.format(prefix, i)
         io.imsave(os.path.join(output_path, name), np.uint8(img))
-        # Image.fromarray(np.uint8(img)).save(os.path.join(output_path, name))
 
 
-def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/pseudomask"):
+def generate_masks(dataset, tiles, groups, preprocess, save_masks=True, output_path="./data/pseudomask"):
     """把预测得到的阳性细胞区域做成二值掩码。
     tiles: up-left coordinates of tiles
     groups: image indices for each tile
@@ -46,18 +43,13 @@ def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/
         pseudo_masks[groups[i]][grid[0]: grid[0] + dataset.tile_size,
                                 grid[1]: grid[1] + dataset.tile_size] = tile_mask
 
-    for i in tqdm(range(len(dataset.images)), desc="saving mask images"):
-        preprocess(pseudo_masks[i])
+    for i, img in enumerate(tqdm(dataset.images, desc="saving mask images")):
+        if preprocess:
+            pseudo_masks[i] = preprocess_masks(img, pseudo_masks[i])
 
         if save_masks:
-            io.imsave(os.path.join(output_path, "rgb/{}.png".format(i + 1)), np.uint8(dataset.images[i]))
+            io.imsave(os.path.join(output_path, "rgb/{}.png".format(i + 1)), np.uint8(img))
             io.imsave(os.path.join(output_path, "mask/{}.png".format(i + 1)), np.uint8(pseudo_masks[i] * 255))
-            # Image.fromarray(np.uint8(dataset.images[i])).save(
-            #     os.path.join(output_path, "rgb/{}.png".format(i + 1)),
-            #     optimize=True)
-            # Image.fromarray(np.uint8(pseudo_masks[i] * 255)).save(
-            #     os.path.join(output_path, "mask/{}.png".format(i + 1)),
-            #     optimize=True)
 
     if save_masks:
         print("Original images & masks saved in \'{}\'.".format(output_path))
@@ -65,12 +57,16 @@ def generate_masks(dataset, tiles, groups, save_masks=True, output_path="./data/
     return pseudo_masks
 
 
-def preprocess(mask):
+def preprocess_masks(img, mask):
+
+    # binarize original images by setting a value thresh in HSV
+    img_split = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
+    _, mask_hsv = cv2.threshold(img_split[2], thresh=170, maxval=255, type=cv2.THRESH_BINARY)
+    # intersect with mask for more precise borders
+    mask = np.logical_and(mask, (1 - mask_hsv / 255).astype(bool))
     # remove small patches with low connectivity
-    mask = morphology.erosion(mask, footprint=morphology.square(3))
-    mask = morphology.erosion(mask, footprint=morphology.square(3))
-    mask = morphology.remove_small_objects(mask, min_size=16*16+1)
-    mask = ndi.binary_fill_holes(mask > 0)
+    mask = morphology.remove_small_objects(mask, min_size=400)
+    mask = morphology.remove_small_holes(mask, area_threshold=120)
 
     return mask
 
@@ -91,7 +87,7 @@ def preprocess(mask):
 #
 #         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
 #         img = img * 0.5 + mask * 0.5
-#         Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(i)))
+#         io.imsave(os.path.join(output_path, "test_{}.png".format(i)), np.uint8(img))
 
 
 def heatmap(testset, tiles, probs, groups, csv_file, output_path):
@@ -101,7 +97,7 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
     groups: image indices for each tile
     """
 
-    masks = np.zeros((len(testset.images), *testset.image_size)).astype(np.uint8)
+    masks = np.zeros((len(testset.images), *testset.image_size))
 
     for i, g in enumerate(groups):
         tile_mask = np.full((testset.tile_size, testset.tile_size), probs[i])
@@ -111,49 +107,11 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
         w = csv.writer(csv_file)
         w.writerow([g, '{}'.format(grid), probs[i]])
 
-    for i, img in tqdm(enumerate(testset.images), desc="saving heatmaps"):
+    for i, img in enumerate(tqdm(testset.images, desc="saving heatmaps")):
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * masks[i]), cv2.COLORMAP_JET)
         img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-        io.imsave(os.path.join(output_path, "test_{}.png".format(groups[i] + 1)), np.uint8(img))
-
-    # count = 0
-    # # test_idx = len(testset)
-    # test_idx = 20
-    #
-    # for i in range(1, len(groups) + 1):
-    #     count += 1
-    #
-    #     if i == len(groups) or groups[i] != groups[i - 1]:
-    #         img = testset.images[groups[i - 1]]
-    #         mask = np.zeros(testset.image_size)
-    #
-    #         for j in range(i - count, i):
-    #             tile_mask = np.full((testset.tile_size, testset.tile_size), probs[j])
-    #             grid = list(map(int, tiles[j]))
-    #
-    #             mask[grid[0]: grid[0] + testset.tile_size,
-    #                  grid[1]: grid[1] + testset.tile_size] = tile_mask
-    #
-    #             w = csv.writer(csv_file)
-    #             w.writerow([groups[i - 1], '{}'.format(grid), probs[j]])
-    #
-    #         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
-    #         img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-    #         io.imsave(os.path.join(output_path, "test_{}.png".format(groups[i - 1] + 1)), np.uint8(img))
-    #         # Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(groups[i - 1] + 1)))
-    #
-    #         count = 0
-    #
-    #         # 没有阳性 tile 的时候。。。
-    #         if i == len(groups) and groups[i - 1] != test_idx or groups[i - 1] != groups[i] - 1:
-    #             for j in range(groups[i - 1] + 1, test_idx if i == len(groups) else groups[i]):
-    #                 img = testset.images[j]
-    #                 mask = np.zeros((img.shape[0], img.shape[1]))
-    #                 mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
-    #                 img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-    #                 io.imsave(os.path.join(output_path, "test_{}.png".format(j + 1)), np.uint8(img))
-    #                 # Image.fromarray(np.uint8(img)).save(os.path.join(output_path, "test_{}.png".format(j + 1)))
+        io.imsave(os.path.join(output_path, "test_{}.png".format(i + 1)), np.uint8(img))
 
 
 def save_images_with_masks(images, masks, threshold, output_path):

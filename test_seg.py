@@ -2,6 +2,7 @@ import os
 import argparse
 import time
 import csv
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,7 @@ parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
                     help='path of output masked images (default: ./output/<timestamp>)')
+parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 args = parser.parse_args()
 
 
@@ -63,15 +65,19 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     print('Loading Dataset ...')
-    testset = MaskTestset("data/ihc/1", num_of_imgs=20)
+    testset = MaskTestset("data/ihc/1", num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
 
     f = torch.load(args.model)
     model = encoders[f['encoder']]
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'], strict=False)
+    # load all params
+    model.load_state_dict(
+        OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                     model.image_module_prefix + model.seg_module_prefix)}),
+        strict=False)
     model.setmode("segment")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)

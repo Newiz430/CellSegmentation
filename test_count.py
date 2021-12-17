@@ -2,6 +2,7 @@ import os
 import argparse
 import time
 import csv
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -58,9 +59,12 @@ if __name__ == "__main__":
 
     f = torch.load(args.model)
     model = encoders[f['encoder']]
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'], strict=False)
+    # load params of resnet encoder and image head only
+    model.load_state_dict(
+        OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+        strict=False)
     model.setmode("image")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)

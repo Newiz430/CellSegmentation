@@ -3,6 +3,7 @@ import numpy as np
 import argparse
 import time
 import csv
+from collections import OrderedDict
 
 import torch
 from torch import nn
@@ -95,7 +96,8 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
             for i, y in enumerate(counts, start=1):
                 w.writerow([i, y, reg_testset.organs[i - 1]])
 
-        indices = np.select([counts != 0], [counts]).nonzero()[0]
+        img_indices = np.select([counts != 0], [counts]).nonzero()[0]
+        indices = [i for i, g in enumerate(groups) if g in img_indices]
         tiles = tiles[indices]
         probs = probs[indices]
         groups = groups[indices]
@@ -128,9 +130,13 @@ if __name__ == "__main__":
 
     f = torch.load(args.model)
     model = encoders[f['encoder']]
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     epoch = f['epoch']
-    model.load_state_dict(f['state_dict'], strict=False)
+    # load params of resnet encoder, tile head and image head only
+    model.load_state_dict(
+        OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(model.resnet_module_prefix + model.image_module_prefix
+                                     + model.tile_module_prefix)}),
+        strict=False)
     model.setmode("tile")
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)

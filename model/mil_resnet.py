@@ -82,6 +82,26 @@ class MILResNet(nn.Module):
     def __init__(self, encoder, block, layers, num_classes=1000, expansion=1):
         self.encoder_name = encoder
         self.mode = None
+        self.resnet_module_prefix = (
+            "conv1",
+            "bn1",
+            "relu",
+            "layer1",
+            "layer2",
+            "layer3",
+            "layer4"
+        )
+        self.image_module_prefix = (
+            "fc_image_cls",
+            "fc_image_reg"
+        )
+        self.tile_module_prefix = (
+            "fc_tile",
+        )
+        self.seg_module_prefix = (
+            "upconv",
+            "seg_out_conv"
+        )
 
         self.inplanes = 64
         super(MILResNet, self).__init__()
@@ -131,16 +151,14 @@ class MILResNet(nn.Module):
 
         def init_seg_modules():
             # 图像上采样卷积层
-            self.upsample1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-            self.upsample2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-            self.upsample3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-
-            self.upconv1 = self.upsample_conv(512 * expansion, 128 * expansion)
-            self.upconv2 = self.upsample_conv(256 * expansion, 64 * expansion)
-            self.upconv3 = self.upsample_conv(128 * expansion, 32 * expansion)
-            self.upconv4 = self.upsample_conv(
-                64 * expansion, 64,
-                mid_channels=64 if expansion == 1 else 32 * expansion)
+            self.upconv1 = self.upsample_conv(512 * expansion, 256 * expansion)
+            self.upconv2 = self.upsample_conv(512 * expansion, 256 * expansion)
+            self.upconv3 = self.upsample_conv(256 * expansion, 128 * expansion)
+            self.upconv4 = self.upsample_conv(256 * expansion, 128 * expansion)
+            self.upconv5 = self.upsample_conv(128 * expansion, 64 * expansion)
+            self.upconv6 = self.upsample_conv(128 * expansion, 64 * expansion)
+            self.upconv7 = self.upsample_conv(64 * expansion, 64 if expansion == 1 else 32 * expansion)
+            self.upconv8 = self.upsample_conv(64 if expansion == 1 else 32 * expansion, 64)
             self.seg_out_conv = nn.Conv2d(64, 2, kernel_size=1)
 
         init_tile_modules()
@@ -173,17 +191,11 @@ class MILResNet(nn.Module):
         return nn.Sequential(*layers)
 
     @staticmethod
-    def upsample_conv(in_channels, out_channels, mid_channels=None):
-        if not mid_channels:
-            mid_channels = out_channels
+    def upsample_conv(in_channels, out_channels):
         return nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(mid_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+            nn.ReLU(inplace=True))
 
     def set_resnet_module_grads(self, requires_grad):
 
@@ -211,9 +223,6 @@ class MILResNet(nn.Module):
 
     def set_seg_module_grads(self, requires_grad):
 
-        self.upsample1.requires_grad_(requires_grad)
-        self.upsample2.requires_grad_(requires_grad)
-        self.upsample3.requires_grad_(requires_grad)
         self.upconv1.requires_grad_(requires_grad)
         self.upconv2.requires_grad_(requires_grad)
         self.upconv3.requires_grad_(requires_grad)
@@ -222,14 +231,14 @@ class MILResNet(nn.Module):
 
     def resnet_forward(self, x: torch.Tensor):
 
-        x = self.conv1(x)    # x_tile: [nk, 64, 16, 16] x_image: [n, 64, 150, 150]
+        x = self.conv1(x)       # x_tile: [nk,  64, 16, 16] x_image: [n,   64, 150, 150]
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 64, 75, 75]
-        x1 = self.layer1(x)  # x_tile: [nk, 64, 8, 8] x_image: [n, 256, 75, 75]
-        x2 = self.layer2(x1) # x_tile: [nk, 128, 4, 4] x_image: [n, 512, 38, 38]
-        x3 = self.layer3(x2) # x_tile: [nk, 256, 2, 2] x_image: [n, 1024, 19, 19]
-        x4 = self.layer4(x3) # x_tile: [nk, 512, 1, 1] x_image: [n, 2048, 10, 10]
+        x = self.maxpool(x)     # x_tile: [nk,  64,  8,  8] x_image: [n,   64,  75,  75]
+        x1 = self.layer1(x)     # x_tile: [nk,  64,  8,  8] x_image: [n,  256,  75,  75]
+        x2 = self.layer2(x1)    # x_tile: [nk, 128,  4,  4] x_image: [n,  512,  38,  38]
+        x3 = self.layer3(x2)    # x_tile: [nk, 256,  2,  2] x_image: [n, 1024,  19,  19]
+        x4 = self.layer4(x3)    # x_tile: [nk, 512,  1,  1] x_image: [n, 2048,  10,  10]
 
         return x4, x3, x2, x1
 
@@ -262,32 +271,28 @@ class MILResNet(nn.Module):
 
         elif self.mode == "segment":
 
-            # image_seg
-            # out_x4 = self.pyramid_10(x4)  # out_x4: [n, 32, 10, 10]
-            # out_x3 = self.pyramid_19(x3)  # out_x3: [n, 32, 19, 19]
-            # out_x2 = self.pyramid_38(x2)  # out_x2: [n, 32, 38, 38]
+            out_seg = F.interpolate(x4.clone(), size=19, mode="bilinear", align_corners=True)   # out_seg: [n, 2048, 19, 19]
+            out_seg = self.upconv1(out_seg)                                                     # [n, 1024, 19, 19]
+            out_seg = torch.cat([out_seg, x3], dim=1)                                           # 连接两层，输出 [n, 2048, 19, 19]
+            out_seg = self.upconv2(out_seg)                                                     # [n, 1024, 19, 19]
 
-            out_seg = F.interpolate(x4.clone(), size=19, mode="bilinear", align_corners=True)  # out_seg: [n, 2048, 19, 19]
-            # out_seg = self.upsample1(x4.clone())
-            out_seg = self.upconv1(out_seg)  # out_seg: [n, 512, 19, 19]
-            out_seg = torch.cat([out_seg, x3], dim=1)  # 连接两层，输出 [n, 1024, 19, 19]
+            out_seg = F.interpolate(out_seg, size=38, mode="bilinear", align_corners=True)      # [n, 1024, 38, 38]
+            out_seg = self.upconv3(out_seg)                                                     # [n, 512, 38, 38]
+            out_seg = torch.cat([out_seg, x2], dim=1)                                           # 连接两层，输出 [n, 1024, 38, 38]
+            out_seg = self.upconv4(out_seg)                                                     # [n, 512, 38, 38]
 
-            out_seg = F.interpolate(out_seg, size=38, mode="bilinear", align_corners=True)  # [n, 1024, 38, 38]
-            # out_seg = self.upsample2(out_seg)
-            out_seg = self.upconv2(out_seg)  # [n, 256, 38, 38]
-            out_seg = torch.cat([out_seg, x2], dim=1)  # 连接两层，输出 [n, 512, 38, 38]
+            out_seg = F.interpolate(out_seg, size=75, mode="bilinear", align_corners=True)      # [n, 512, 75, 75]
+            out_seg = self.upconv5(out_seg)                                                     # [n, 256, 75, 75]
+            out_seg = torch.cat([out_seg, x1], dim=1)                                           # 连接两层，输出 [n, 512, 75, 75]
+            out_seg = self.upconv6(out_seg)                                                     # [n, 256, 75, 75]
 
-            out_seg = F.interpolate(out_seg, size=75, mode="bilinear", align_corners=True)  # [n, 512, 75, 75]
-            # out_seg = self.upsample3(out_seg)
-            out_seg = self.upconv3(out_seg)  # [n, 128, 75, 75]
-            out_seg = torch.cat([out_seg, x1], dim=1)  # 连接两层，输出 [n, 256, 75, 75]
+            out_seg = F.interpolate(out_seg, size=150, mode="bilinear", align_corners=True)     # [n, 256, 150, 150]
+            out_seg = self.upconv7(out_seg)                                                     # [n, 128, 150, 150]
+            out_seg = self.upconv8(out_seg)                                                     # [n, 64, 150, 150]
+            out_seg = F.interpolate(out_seg, size=299, mode="bilinear", align_corners=True)     # [n, 64, 299, 299]
+            out_seg = self.seg_out_conv(out_seg)                                                # [n, 1, 299, 299]
 
-            out_seg = F.interpolate(out_seg, size=150, mode="bilinear", align_corners=True) # [n, 256, 150, 150]
-            out_seg = self.upconv4(out_seg)  # [n, 64, 150, 150]
-            out_seg = F.interpolate(out_seg, size=299, mode="bilinear", align_corners=True)  # [n, 64, 299, 299]
-            out_seg = self.seg_out_conv(out_seg)  # [n, 1, 299, 299]
-
-            return out_seg
+            return nn.Sigmoid()(out_seg)
 
         else:
             raise Exception("Something wrong in setmode.")
@@ -325,6 +330,8 @@ def MILresnet18(pretrained=False, **kwargs):
     model = MILResNet('resnet18', BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
+    # change num of cell classes from 1000 to 2 here to make it compatible with pretrained files
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model
 
 
@@ -333,6 +340,7 @@ def MILresnet34(pretrained=False, **kwargs):
     model = MILResNet('resnet34', BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet34']), strict=False)
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model
 
 
@@ -341,4 +349,5 @@ def MILresnet50(pretrained=False, **kwargs):
     model = MILResNet('resnet50', Bottleneck, [3, 4, 6, 3], expansion=4, **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model

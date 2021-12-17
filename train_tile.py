@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import time
+from collections import OrderedDict
 
 import torch
 import torch.optim as optim
@@ -149,18 +150,22 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
     print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
 
 
-def save_model(epoch, model, optimizer, scheduler, output_path):
+def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt2'):
     """用 .pth 格式保存模型。"""
-
+    # save params of resnet encoder, image head and tile head only
+    state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
+                              if k.startswith(model.resnet_module_prefix +
+                                              model.image_module_prefix +
+                                              model.tile_module_prefix)})
     obj = {
         'mode': 'tile',
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': state_dict,
         'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
-    torch.save(obj, os.path.join(output_path, 'pt2_{}epochs.pth'.format(epoch)))
+    torch.save(obj, os.path.join(output_path, '{}_{}epochs.pth'.format(prefix, epoch)))
 
 
 def add_scalar_loss(writer, epoch, loss):
@@ -208,9 +213,11 @@ if __name__ == "__main__":
     # model setup
     f = torch.load(args.model)
     model = encoders[f['encoder']]
-    # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
-    model.load_state_dict(f['state_dict'], strict=False)
+    # load params of resnet encoder and image head only
+    model.load_state_dict(
+        OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+        strict=False)
     model.setmode("tile")
 
     crit_cls = nn.CrossEntropyLoss()
@@ -264,6 +271,12 @@ if __name__ == "__main__":
         checkpoint = torch.load(args.resume)
         last_epoch = checkpoint['epoch']
         last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
+        # load params of resnet encoder, tile head and image head only
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in checkpoint['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix)}),
+            strict=False)
         model.load_state_dict(checkpoint['state_dict'], strict=False)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])

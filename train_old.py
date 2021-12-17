@@ -4,6 +4,7 @@ import sys
 import argparse
 import time
 import csv
+from collections import OrderedDict
 
 import torch
 import torch.optim as optim
@@ -272,11 +273,18 @@ def train(single_branch, total_epochs, last_epoch, test_every, model, device, cr
 
 def save_model(epoch, model, mode, optimizer, scheduler, output_path):
     """用 .pth 格式保存模型。"""
-
+    # save specific param groups, depending on the training mode
+    prefixes = model.resnet_module_prefix
+    if mode != "tile":
+        prefixes += model.image_module_prefix
+    if mode != "image":
+        prefixes += model.tile_module_prefix
+    state_dict = OrderedDict({k: v for k, v in model.state_dict()
+                              if k.startswith(prefixes)})
     obj = {
         'mode': mode,
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': state_dict,
         'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
@@ -365,8 +373,6 @@ if __name__ == "__main__":
 
     # model setup
     model = encoders[args.encoder]
-    # 把 ResNet 源码中的分为 1000 类改为二分类（由于预训练模型文件的限制，只能在外面改）
-    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
 
     crit_cls = nn.CrossEntropyLoss()
     crit_reg = nn.MSELoss()
@@ -423,7 +429,12 @@ if __name__ == "__main__":
         checkpoint = torch.load(args.resume)
         last_epoch = checkpoint['epoch']
         last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-        model.load_state_dict(checkpoint['state_dict'])
+        # load params of resnet encoder, tile head and image head only
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in checkpoint['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix)}),
+            strict=False)
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
