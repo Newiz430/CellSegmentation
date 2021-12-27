@@ -57,4 +57,4 @@ class DiceLoss(nn.Module):
         for i in range(inputs.size(0)):
             # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
             dice += dice_coef(inputs[i], targets[i], self.epsilon)
-        return dice
+        return 1 - dice
