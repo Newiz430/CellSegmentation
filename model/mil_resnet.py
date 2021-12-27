@@ -292,7 +292,7 @@ class MILResNet(nn.Module):
             out_seg = F.interpolate(out_seg, size=299, mode="bilinear", align_corners=True)     # [n, 64, 299, 299]
             out_seg = self.seg_out_conv(out_seg)                                                # [n, 1, 299, 299]
 
-            return nn.Sigmoid()(out_seg)
+            return out_seg
 
         else:
             raise Exception("Something wrong in setmode.")

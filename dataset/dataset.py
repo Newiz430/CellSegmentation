@@ -1,3 +1,4 @@
+import collections
 import os
 import sys
 
@@ -14,6 +15,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 import torchvision.utils as utils
+
 
 class LystoDataset(Dataset):
 
@@ -40,13 +42,13 @@ class LystoDataset(Dataset):
         self.train = train
         self.kfold = kfold
         # self.visualize = False
-        self.organs = []            # 全切片来源，list ( 20000 )
-        self.images = []            # list ( 20000 * 299 * 299 * 3 )
-        self.labels = []            # 图像中的阳性细胞数目，list ( 20000 )
-        self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签
-        self.transformIDX = []      # 数据增强的类别，list (  )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，list ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
+        self.organs = []  # 全切片来源，list ( 20000 )
+        self.images = []  # list ( 20000 * 299 * 299 * 3 )
+        self.labels = []  # 图像中的阳性细胞数目，list ( 20000 )
+        self.cls_labels = []  # 按数目把图像分为 7 类，存为类别标签
+        self.transformIDX = []  # 数据增强的类别，list (  )
+        self.tileIDX = []  # 每个 tile 对应的图像编号，list ( 20000 * n )
+        self.tiles_grid = []  # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -65,12 +67,12 @@ class LystoDataset(Dataset):
                 std=[0.229, 0.224, 0.225]
             )
         ])] + [transforms.Compose([
-                transforms.ToTensor(),
-                augment,
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
+            transforms.ToTensor(),
+            augment,
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
         ]) for augment in augment_transforms]
 
         def store_data(transidx=0):
@@ -132,7 +134,7 @@ class LystoDataset(Dataset):
     def make_train_data(self, idxs):
         # 制作 tile mode 训练用数据集，当 tile 对应的图像的 label 为 n 时标签为 1 ，否则为 0
         self.train_data = [(self.tileIDX[i], self.tiles_grid[i],
-                           0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs]
+                            0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs]
         # if shuffle:
         #     self.train_data = random.sample(self.train_data, len(self.train_data))
 
@@ -160,7 +162,8 @@ class LystoDataset(Dataset):
 
         # alternative training mode
         elif self.mode == 2:
-            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for alternative training. "
+            assert len(
+                self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for alternative training. "
 
             # Get images
             image = self.images[idx]
@@ -209,7 +212,8 @@ class LystoDataset(Dataset):
 
         # tile-only training mode
         elif self.mode == 3:
-            assert len(self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile-mode training. "
+            assert len(
+                self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for tile-mode training. "
 
             tileIDX, (x, y), label = self.train_data[idx]
             tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
@@ -272,10 +276,10 @@ class LystoTestset(Dataset):
         else:
             raise FileNotFoundError("Invalid data directory.")
 
-        self.organs = []            # 全切片来源，list ( 20000 )
-        self.images = []            # list ( 20000 * 299 * 299 * 3 )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，list ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
+        self.organs = []  # 全切片来源，list ( 20000 )
+        self.images = []  # list ( 20000 * 299 * 299 * 3 )
+        self.tileIDX = []  # 每个 tile 对应的图像编号，list ( 20000 * n )
+        self.tiles_grid = []  # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -414,17 +418,26 @@ class MaskTestset(Dataset):
         self.images = []            # list ( n * 3 * 299 * 299 )
 
         if os.path.isdir(filepath):
-            for i, path in enumerate(os.listdir(filepath)):
+            self.images_grid = []   # list ( n * 2 )
+            self.imageIDX = []      # list ( n )
+
+            for i, file in enumerate(os.listdir(filepath)):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
                 # TODO: sample patches
-                if path.endswith((".svs", ".tiff")):
-                    slide = OpenSlide(path)
-                    self.images.append(self.sample_patches(slide))
+                if file.endswith((".svs", ".tiff")):
+                    slide = OpenSlide(os.path.join(filepath, file))
+                    patches, patches_grid = self.sample_patches(slide, 299 - 16, 299)
+                    self.images.extend(patches)
+                    self.images_grid.extend(patches_grid)
+                    self.imageIDX.extend([i] * len(patches_grid))
                     slide.close()
-                elif path.endswith((".jpg", ".png")):
-                    img = io.imread(path).astype(np.uint8)
-                    self.images.append(self.sample_patches(img))
+                elif file.endswith((".jpg", ".png")):
+                    img = io.imread(os.path.join(filepath, file)).astype(np.uint8)
+                    patches, patches_grid = self.sample_patches(img, 299 - 16, 299)
+                    self.images.extend(patches)
+                    self.images_grid.extend(patches_grid)
+                    self.imageIDX.extend([i] * len(patches_grid))
                 else:
                     raise FileNotFoundError("Invalid data directory.")
 
@@ -435,6 +448,7 @@ class MaskTestset(Dataset):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
                 self.images.append(img)
+
         else:
             raise FileNotFoundError("Invalid data directory.")
 
@@ -447,6 +461,54 @@ class MaskTestset(Dataset):
             )
         ])
         self.mode = None
+
+    def sample_patches(self, imgs_or_slides, interval, size):
+
+        patches = []
+        patches_grid = []
+        if isinstance(imgs_or_slides, OpenSlide):
+            xborder, yborder = imgs_or_slides.dimensions[0] - size, imgs_or_slides.dimensions[1] - size
+            for x in np.arange(0, xborder + 1, interval):
+                for y in np.arange(0, yborder + 1, interval):
+                    patches.append(np.asarray(imgs_or_slides.read_region((x, y), level=0, size=(size, size))))
+                    patches_grid.append((x, y))
+                if patches_grid[-1][1] != yborder:
+                    patches.append(np.asarray(imgs_or_slides.read_region((x, yborder),
+                                                                         level=0, size=(size, size))))
+                    patches_grid.append((x, yborder))
+
+            if patches_grid[-1][0] != xborder:
+                for y in np.arange(0, yborder + 1, interval):
+                    patches.append(np.asarray(imgs_or_slides.read_region((xborder, y),
+                                                                         level=0, size=(size, size))))
+                    patches_grid.append((xborder, y))
+
+                if patches_grid[-1][1] != yborder:
+                    patches.append(np.asarray(imgs_or_slides.read_region((xborder, yborder),
+                                                                         level=0, size=(size, size))))
+                    patches_grid.append((xborder, yborder))
+
+        elif isinstance(imgs_or_slides, np.ndarray):
+            xborder, yborder = imgs_or_slides.shape[0] - size, imgs_or_slides.shape[1] - size
+            for x in np.arange(0, xborder + 1, interval):
+                for y in np.arange(0, yborder + 1, interval):
+                    patches.append(imgs_or_slides[x:x + size, y:y + size])
+                    patches_grid.append((x, y))
+                if patches_grid[-1][1] != yborder:
+                    patches.append(imgs_or_slides[x:x + size, yborder:])
+                    patches_grid.append((x, yborder))
+
+            if patches_grid[-1][0] != xborder:
+                for y in np.arange(0, yborder + 1, interval):
+                    patches.append(imgs_or_slides[xborder:, y:y + size])
+                    patches_grid.append((xborder, y))
+
+                if patches_grid[-1][1] != yborder:
+                    patches.append(imgs_or_slides[xborder:, yborder:])
+                    patches_grid.append((xborder, yborder))
+        else:
+            raise TypeError("Invalid image type.")
+        return patches, patches_grid
 
     def __getitem__(self, idx):
 

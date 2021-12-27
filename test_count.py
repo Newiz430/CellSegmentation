@@ -57,7 +57,9 @@ if __name__ == "__main__":
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=True)
 
-    f = torch.load(args.model)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+    f = torch.load(args.model, map_location=device)
     model = encoders[f['encoder']]
     epoch = f['epoch']
     # load params of resnet encoder and image head only
@@ -66,9 +68,6 @@ if __name__ == "__main__":
                      if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
         strict=False)
     model.setmode("image")
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     model.to(device)
 
     test_count(test_loader, model, epoch, args.cls_limit, output_path=args.output)

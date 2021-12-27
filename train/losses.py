@@ -51,7 +51,7 @@ class DiceLoss(nn.Module):
         # you need to extract dim [1] cuz input is like [n, 2, 300, 300] and target like [n, 300, 300]
         # dice_coef takes [300, 300] as input
         if inputs.ndim == 4:
-            inputs = inputs[:, 0]
+            inputs = inputs[:, 1]
 
         dice = 0
         for i in range(inputs.size(0)):

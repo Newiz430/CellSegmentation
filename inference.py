@@ -142,4 +142,4 @@ def inference_seg(loader, model, device, mode='train'):
                 output = F.softmax(output)
             masks.append(output.cpu().numpy())
 
-    return masks
+    return np.concatenate(masks)

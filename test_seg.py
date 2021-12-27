@@ -19,6 +19,8 @@ parser = argparse.ArgumentParser(prog="test_seg.py", description='Segmentation e
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('--draw_masks', action='store_true', help='evaluation via computing binary masks')
 parser.add_argument('--detect', action='store_true', help='evaluation via cell center localization')
+parser.add_argument('-D', '--data_path', type=str, default='data/test.h5',
+                    help='path to testing data (default: ./data/test.h5)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64,
                     help='batch size of images (default: 64)')
 parser.add_argument('-c', '--threshold', type=float, default=0.5,
@@ -37,15 +39,8 @@ def test_seg(testset, threshold, output_path):
 
     global epoch, model
 
-    fconv = open(os.path.join(output_path, '{}-seg-e{}.csv'.format(
-        now, epoch)), 'w', newline="")
-    w = csv.writer(fconv, delimiter=',')
-    w.writerow(['id', 'dice', 'organ'])
-
     print('Start testing ...')
-
-    masks = inference_seg(test_loader, model, device)
-
+    masks = inference_seg(test_loader, model, device, mode='test')
     save_images_with_masks(testset.images, masks, threshold, output_path)
 
 
@@ -58,18 +53,21 @@ def test_detect(testset, output_path):
 if __name__ == "__main__":
 
     print("Testing settings: ")
-    print("Device: {} | Model: {} | Image batch size: {} | Threshold: {} | Output directory: {}"
-          .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.image_batch_size,
-                  args.threshold, args.output))
+    print("Device: {} | Model: {} | Data directory: {} | Image batch size: {}\n"
+          "Threshold: {} | Output directory: {}"
+          .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.data_path,
+                  args.image_batch_size, args.threshold, args.output))
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
     print('Loading Dataset ...')
-    testset = MaskTestset("data/ihc/1", num_of_imgs=20 if args.debug else 0)
-    test_loader = DataLoader(testset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers,
+    testset = MaskTestset(args.data_path, num_of_imgs=20 if args.debug else 0)
+    test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
 
-    f = torch.load(args.model)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+    f = torch.load(args.model, map_location=device)
     model = encoders[f['encoder']]
     epoch = f['epoch']
     # load all params
@@ -79,9 +77,6 @@ if __name__ == "__main__":
                                      model.image_module_prefix + model.seg_module_prefix)}),
         strict=False)
     model.setmode("segment")
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     model.to(device)
 
     if args.draw_masks:

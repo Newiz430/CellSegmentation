@@ -2,11 +2,11 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
-from torch.nn import BCELoss
+from torch.nn import BCELoss, CrossEntropyLoss as CELoss
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import *
 
-from .loss import DiceLoss
+from .losses import DiceLoss
 
 def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, gamma):
     """Tile training for one epoch.
@@ -181,16 +181,20 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, 
     train_bar.set_postfix(epoch="[{}/{}]".format(epoch, total_epochs))
     for i, (image, mask, label) in enumerate(train_bar):
 
-        mask = mask.to(device, dtype=torch.float32)
+        mask = (mask / 255).to(device, dtype=torch.float32)
         # label = label.to(device)
         optimizer.zero_grad()
         output = model(image.to(device)).to(dtype=torch.float32)
         # output: [n, 2, 299, 299]
         # mask:   [n,    299, 299]
-        loss = delta * (
-            DiceLoss()(output, mask) +
-            BCELoss()(output[:, 0], mask)
-        )
+        ce = CELoss()(output, mask.to(dtype=torch.long))
+        dice = DiceLoss()(F.softmax(output), mask)
+        # bce = BCELoss()(output[:, 0], mask)
+        loss = delta * (dice + ce)
+        # loss = delta * (
+        #     DiceLoss()(F.softmax(output), mask) +
+        #     BCELoss()(output[:, 0], mask)
+        # )
         loss.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):

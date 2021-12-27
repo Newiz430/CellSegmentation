@@ -126,9 +126,11 @@ if __name__ == "__main__":
                              pin_memory=False)
     reg_testset = LystoTestset("data/test.h5", num_of_imgs=20 if args.debug else 0)
     reg_loader = DataLoader(reg_testset, batch_size=64, shuffle=False, num_workers=args.workers,
-                             pin_memory=True)
+                            pin_memory=True)
 
-    f = torch.load(args.model)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+    f = torch.load(args.model, map_location=device)
     model = encoders[f['encoder']]
     epoch = f['epoch']
     # load params of resnet encoder, tile head and image head only
@@ -138,9 +140,6 @@ if __name__ == "__main__":
                                      + model.tile_module_prefix)}),
         strict=False)
     model.setmode("tile")
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     model.to(device)
 
     test_tile(test_loader,
@@ -149,4 +148,4 @@ if __name__ == "__main__":
               reg_limit=args.reg_limit,
               reg_loader=reg_loader,
               output_path=args.output
-    )
+              )

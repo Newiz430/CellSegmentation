@@ -116,15 +116,15 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 
 def save_images_with_masks(images, masks, threshold, output_path):
     """
-    images: list of 3-d RGB np.ndarrays
-    masks: list of 2-d output np.ndarrays
+    images: list of 3-d RGB np.ndarrays (3, h, w)
+    masks: list of 3-d output np.ndarrays (2, h, w)
     """
 
     for i in tqdm(range(len(images)), desc="generating segmentation results"):
         mask = masks[i][0] > threshold
 
         for ch in range(3):
-            images[i][:, :, ch] = images[i][:, :, ch] * 0.5 + np.uint8(255 * mask) * 0.5
+            images[i][:, :, ch] = images[i][:, :, ch] * 0.4 + np.uint8(255 * mask) * 0.6
 
         io.imsave(os.path.join(output_path, 'test_{}.png'.format(i + 1)), np.uint8(images[i]))
 

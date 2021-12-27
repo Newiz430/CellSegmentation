@@ -25,7 +25,7 @@ now = int(time.time())
 
 # Training settings
 parser = argparse.ArgumentParser(prog="train_seg.py", description='pt.3: cell segmentation branch training.')
-parser.add_argument('-m', '--model', type=str, help='path to pretrained model in pt.1')
+parser.add_argument('-m', '--model', type=str, help='path to pretrained model in pt.2')
 parser.add_argument('--skip_draw', action='store_true',
                     help='skip binary mask generating step, using the images from data/pseudomask instead')
 parser.add_argument('-p', '--preprocess', action='store_true',
@@ -52,7 +52,7 @@ parser.add_argument('-s', '--scheduler', type=str, default=None,
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--distributed', action="store_true",
-                    help='if distributed parallel training is enabled (seems to no avail)')
+                    help='if distributed parallel training is enabled (seems to be no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0, mutually exclusive with --distributed)')
 parser.add_argument('-o', '--output', type=str, default='checkpoint/{}'.format(now), metavar='OUTPUT/PATH',
@@ -80,8 +80,6 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
     fconv.write('epoch,image_cls_loss,image_reg_loss,image_loss,image_seg_loss\n')
     fconv.close()
 
-    print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
-
     start = int(time.time())
     with SummaryWriter() as writer:
         delta = 1
@@ -108,8 +106,6 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
                 # # Validating step
                 # if validate(epoch, test_every):
                 #     print('Validating ...')
-                #
-                #     valset.setmode()
 
                 save_model(epoch, model, optimizer, scheduler, output_path)
 
@@ -146,12 +142,11 @@ def add_scalar_loss(writer, epoch, loss):
 
 
 if __name__ == "__main__":
-
     print("Training settings: ")
     print("Training Mode: {} | Device: {} | Model: {} | {} epoch(s) in total\n"
           "No validation | Initial LR: {} | Output directory: {}"
-          .format('tile + image (pt.3)', 'GPU' if torch.cuda.is_available() else 'CPU',
-                  args.model, args.epochs, args.lr, args.output))
+          .format('segmentation (pt.3)', 'GPU' if torch.cuda.is_available() else 'CPU',
+                  args.resume if args.resume else args.model, args.epochs, args.lr, args.output))
     if args.skip_draw:
         print("Read pseudomasks from storage | Image batch size: {}".format(args.image_batch_size))
     else:
@@ -160,29 +155,46 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
-    f = torch.load(args.model)
-    model = encoders[f['encoder']]
-    epoch = f['epoch']
-    # load params of resnet encoder, tile head and image head only
-    model.load_state_dict(
-        OrderedDict({k: v for k, v in f['state_dict'].items()
-                     if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
-                                     model.image_module_prefix)}),
-        strict=False)
-    last_epoch = 0
-    last_epoch_for_scheduler = -1
+    # model setup
+    def to_device(model, device):
+        if dist.is_nccl_available() and args.distributed:
+            print('\nNCCL is available. Setup distributed parallel training with {} devices...\n'
+                  .format(torch.cuda.device_count()))
+            dist.init_process_group(backend='nccl', world_size=1)
+            device = torch.device("cuda", args.local_rank)
+            model.to(device)
+            model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                        output_device=args.local_rank)
+        else:
+            model.to(device)
+        return model
 
-    if dist.is_nccl_available() and args.distributed:
-        print('\nNCCL is available. Setup distributed parallel training with {} devices...\n'
-              .format(torch.cuda.device_count()))
-        dist.init_process_group(backend='nccl', world_size=1)
-        device = torch.device("cuda", args.local_rank)
-        model.to(device)
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+    if args.resume:
+        cp = torch.load(args.resume, map_location=device)
+        model = encoders[cp['encoder']]
+        model = to_device(model, device)
+        # load all params
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in cp['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix + model.seg_module_prefix)}),
+            strict=False)
+        last_epoch = cp['epoch']
+        last_epoch_for_scheduler = cp['scheduler']['last_epoch'] if cp['scheduler'] is not None else -1
     else:
-        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-        model.to(device)
+        f = torch.load(args.model, map_location=device)
+        model = encoders[f['encoder']]
+        model = to_device(model, device)
+        # load params of resnet encoder, tile head and image head only
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in f['state_dict'].items()
+                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix)}),
+            strict=False)
+        last_epoch = 0
+        last_epoch_for_scheduler = -1
 
     if not args.skip_draw:
         from dataset import LystoDataset
@@ -246,6 +258,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,
                               sampler=train_sampler, pin_memory=True)
 
+    # optimization settings
     optimizer_params = {'params': model.parameters(),
                         'initial_lr': args.lr}
     optimizers = {
@@ -276,19 +289,10 @@ if __name__ == "__main__":
                                            last_epoch=last_epoch_for_scheduler,
                                            **scheduler_kwargs[args.scheduler]) \
         if args.scheduler is not None else None
-
     if args.resume:
-        checkpoint = torch.load(args.resume)
-        last_epoch = checkpoint['epoch']
-        last_epoch_for_scheduler = checkpoint['scheduler']['last_epoch']
-        # load all params
-        model.load_state_dict(
-            OrderedDict({k: v for k, v in checkpoint['state_dict'].items()
-                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
-                                         model.image_module_prefix + model.seg_module_prefix)}),
-            strict=False)
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        scheduler.load_state_dict(checkpoint['scheduler'])
+        optimizer.load_state_dict(cp['optimizer'])
+        if cp['scheduler'] is not None and scheduler is not None:
+            scheduler.load_state_dict(cp['scheduler'])
 
     model.setmode("segment")
     train(total_epochs=args.epochs,
