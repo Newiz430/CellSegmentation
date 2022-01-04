@@ -40,8 +40,8 @@ parser.add_argument('-t', '--tile_size', type=int, default=16,
 parser.add_argument('-c', '--threshold', type=float, default=0.95,
                     help='minimal prob for tiles to show in generating segmentation masks '
                          '(default: 0.95, no use if --skip_draw is chosen)')
-parser.add_argument('-B', '--image_batch_size', type=int, default=48,
-                    help='batch size of images (default: 48)')
+parser.add_argument('-B', '--image_batch_size', type=int, default=32,
+                    help='batch size of images (default: 32)')
 parser.add_argument('-e', '--epochs', type=int, default=30,
                     help='total number of epochs to train (default: 30)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',

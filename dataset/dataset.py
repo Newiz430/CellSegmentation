@@ -1,13 +1,14 @@
 import collections
 import os
 import sys
+from tqdm import tqdm
 
 import h5py
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 from itertools import cycle
-# from PIL import Image
+from PIL import Image
 from skimage import io
 from openslide import OpenSlide
 
@@ -16,6 +17,8 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 import torchvision.utils as utils
 
+Image.MAX_IMAGE_PIXELS = None
+patch_size = np.array([299, 299])
 
 class LystoDataset(Dataset):
 
@@ -60,7 +63,7 @@ class LystoDataset(Dataset):
                 transforms.RandomVerticalFlip(p=1)
             ])
         ]
-        self.transforms = [transforms.Compose([
+        self.transform = [transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -95,7 +98,7 @@ class LystoDataset(Dataset):
             return cls_label
 
         tileIDX = -1
-        for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
+        for i, (organ, img, label) in enumerate(tqdm(zip(f['organ'], f['x'], f['y']), desc="loading images")):
 
             # 调试用代码
             if num_of_imgs != 0 and i == num_of_imgs:
@@ -114,7 +117,7 @@ class LystoDataset(Dataset):
 
         assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 
-        self.image_size = self.images[0].shape[0:2]
+        self.image_size = patch_size
         self.mode = None
 
     def setmode(self, mode):
@@ -155,7 +158,7 @@ class LystoDataset(Dataset):
 
             (x, y) = self.tiles_grid[idx]
             tile = self.images[self.tileIDX[idx]][x:x + self.tile_size, y:y + self.tile_size]
-            tile = self.transforms[self.transformIDX[self.tileIDX[idx]]](tile)
+            tile = self.transform[self.transformIDX[self.tileIDX[idx]]](tile)
 
             label = self.labels[self.tileIDX[idx]]
             return tile, label
@@ -204,8 +207,8 @@ class LystoDataset(Dataset):
             #     utils.save_image(image, "test/img{}.png".format(idx))
             #     print("Image is saved.")
 
-            tiles = [self.transforms[self.transformIDX[self.tileIDX[idx]]](tile) for tile in tiles]
-            image = self.transforms[self.transformIDX[idx]](image)
+            tiles = [self.transform[self.transformIDX[self.tileIDX[idx]]](tile) for tile in tiles]
+            image = self.transform[self.transformIDX[idx]](image)
 
             return (image.unsqueeze(0), torch.stack(tiles, dim=0)), \
                    (label_cls, label_reg, torch.tensor(tile_labels))
@@ -217,7 +220,7 @@ class LystoDataset(Dataset):
 
             tileIDX, (x, y), label = self.train_data[idx]
             tile = self.images[tileIDX][x:x + self.tile_size, y:y + self.tile_size]
-            tile = self.transforms[self.transformIDX[self.tileIDX[idx]]](tile)
+            tile = self.transform[self.transformIDX[self.tileIDX[idx]]](tile)
             return tile, label
 
         # image validating mode
@@ -227,7 +230,7 @@ class LystoDataset(Dataset):
             label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
-            image = self.transforms[self.transformIDX[idx]](image)
+            image = self.transform[self.transformIDX[idx]](image)
             return image, label_cls, label_reg
 
         # image-only training mode
@@ -237,7 +240,7 @@ class LystoDataset(Dataset):
             label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
-            image = self.transforms[self.transformIDX[idx]](image)
+            image = self.transform[self.transformIDX[idx]](image)
             # for image-only training, images need to be unsqueezed
             return image.unsqueeze(0), label_cls, label_reg
 
@@ -284,7 +287,7 @@ class LystoTestset(Dataset):
         self.tile_size = tile_size
 
         tileIDX = -1
-        for i, (organ, img) in enumerate(zip(f['organ'], f['x'])):
+        for i, (organ, img) in enumerate(tqdm(zip(f['organ'], f['x']), desc="loading images")):
 
             # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
             if num_of_imgs != 0 and i == num_of_imgs:
@@ -299,7 +302,7 @@ class LystoTestset(Dataset):
                 self.tiles_grid.extend(t)
                 self.tileIDX.extend([tileIDX] * len(t))
 
-        self.image_size = self.images[0].shape[0:2]
+        self.image_size = patch_size
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(
@@ -365,21 +368,18 @@ class Maskset(Dataset):
         self.masks = []
         self.labels = []
 
-        for i, (organ, img, label) in enumerate(zip(f['organ'], f['x'], f['y'])):
-
+        for i, (organ, img, label) in enumerate(tqdm(zip(f['organ'], f['x'], f['y']), desc="loading images")):
             if num_of_imgs != 0 and i == num_of_imgs:
                 break
-
             self.organs.append(organ)
             self.images.append(img)
             self.labels.append(label)
 
         if isinstance(mask_data, str):
-            for file in os.listdir(os.path.join(mask_data, 'mask')):
 
+            for file in sorted(os.listdir(os.path.join(mask_data, 'mask'))):
                 if num_of_imgs != 0 and len(self.masks) == len(self.images):
                     break
-
                 img = io.imread(os.path.join(mask_data, 'mask', file))
                 self.masks.append(img)
 
@@ -390,7 +390,11 @@ class Maskset(Dataset):
 
         assert len(self.masks) == len(self.images), "Mismatched number of masks and RGB images."
 
-        self.transforms = transforms.Compose([
+        # for i in range(len(self.images)):
+        #     io.imsave("ts/rgb_{}.png".format(i + 1), np.uint8(self.images[i]))
+        #     io.imsave("ts/mask_{}.png".format(i + 1), np.uint8(self.masks[i]))
+
+        self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -399,7 +403,7 @@ class Maskset(Dataset):
 
     def __getitem__(self, idx):
 
-        image = self.transforms(self.images[idx])
+        image = self.transform(self.images[idx])
         mask = self.masks[idx]
         label = self.labels[idx]
 
@@ -415,36 +419,40 @@ class MaskTestset(Dataset):
 
         super(MaskTestset, self).__init__()
 
-        self.images = []            # list ( n * 3 * 299 * 299 )
+        self.filepath = filepath
+        self.patch_size = patch_size
 
-        if os.path.isdir(filepath):
+        if os.path.isdir(self.filepath):
             self.images_grid = []   # list ( n * 2 )
             self.imageIDX = []      # list ( n )
+            self.image_size = []    # list ( ? )
 
-            for i, file in enumerate(os.listdir(filepath)):
+            for i, file in enumerate(tqdm(sorted(os.listdir(self.filepath)), desc="loading images")):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
-                # TODO: sample patches
                 if file.endswith((".svs", ".tiff")):
-                    slide = OpenSlide(os.path.join(filepath, file))
-                    patches, patches_grid = self.sample_patches(slide, 299 - 16, 299)
-                    self.images.extend(patches)
+                    self.mode = "WSI"
+                    slide = OpenSlide(os.path.join(self.filepath, file))
+                    patches_grid = self.sample_patches(slide.dimensions, self.patch_size - 16)
                     self.images_grid.extend(patches_grid)
                     self.imageIDX.extend([i] * len(patches_grid))
+                    self.image_size.append(slide.dimensions)
                     slide.close()
                 elif file.endswith((".jpg", ".png")):
-                    img = io.imread(os.path.join(filepath, file)).astype(np.uint8)
-                    patches, patches_grid = self.sample_patches(img, 299 - 16, 299)
-                    self.images.extend(patches)
+                    self.mode = "ROI"
+                    img = io.imread(os.path.join(self.filepath, file)).astype(np.uint8)
+                    patches_grid = self.sample_patches(img.shape, self.patch_size - 16)
                     self.images_grid.extend(patches_grid)
                     self.imageIDX.extend([i] * len(patches_grid))
+                    self.image_size.append(img.shape)
                 else:
                     raise FileNotFoundError("Invalid data directory.")
 
-        elif os.path.isfile(filepath) and filepath.endswith(("h5", "hdf5")):
-            f = h5py.File(filepath, 'r')
+        elif os.path.isfile(self.filepath) and self.filepath.endswith(("h5", "hdf5")):
+            self.mode = "patch"
+            self.images = []
+            f = h5py.File(self.filepath, 'r')
             for i, img in enumerate(f['x']):
-                # TODO: 调试用代码，实际代码不包含 num_of_imgs 参数及以下两行
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
                 self.images.append(img)
@@ -452,7 +460,6 @@ class MaskTestset(Dataset):
         else:
             raise FileNotFoundError("Invalid data directory.")
 
-        self.image_size = self.images[0].shape[0:2]
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(
@@ -460,74 +467,85 @@ class MaskTestset(Dataset):
                 std=[0.229, 0.224, 0.225]
             )
         ])
-        self.mode = None
 
-    def sample_patches(self, imgs_or_slides, interval, size):
+    def sample_patches(self, size, interval):
 
-        patches = []
         patches_grid = []
-        if isinstance(imgs_or_slides, OpenSlide):
-            xborder, yborder = imgs_or_slides.dimensions[0] - size, imgs_or_slides.dimensions[1] - size
-            for x in np.arange(0, xborder + 1, interval):
-                for y in np.arange(0, yborder + 1, interval):
-                    patches.append(np.asarray(imgs_or_slides.read_region((x, y), level=0, size=(size, size))))
+        xborder = size[0] - self.patch_size[0]
+        yborder = size[1] - self.patch_size[1]
+
+        if self.mode == "WSI":
+            for x in np.arange(0, xborder + 1, interval[0]):
+                for y in np.arange(0, yborder + 1, interval[1]):
                     patches_grid.append((x, y))
                 if patches_grid[-1][1] != yborder:
-                    patches.append(np.asarray(imgs_or_slides.read_region((x, yborder),
-                                                                         level=0, size=(size, size))))
                     patches_grid.append((x, yborder))
+                # return patches_grid
 
             if patches_grid[-1][0] != xborder:
-                for y in np.arange(0, yborder + 1, interval):
-                    patches.append(np.asarray(imgs_or_slides.read_region((xborder, y),
-                                                                         level=0, size=(size, size))))
+                for y in np.arange(0, yborder + 1, interval[1]):
                     patches_grid.append((xborder, y))
 
                 if patches_grid[-1][1] != yborder:
-                    patches.append(np.asarray(imgs_or_slides.read_region((xborder, yborder),
-                                                                         level=0, size=(size, size))))
                     patches_grid.append((xborder, yborder))
 
-        elif isinstance(imgs_or_slides, np.ndarray):
-            xborder, yborder = imgs_or_slides.shape[0] - size, imgs_or_slides.shape[1] - size
-            for x in np.arange(0, xborder + 1, interval):
-                for y in np.arange(0, yborder + 1, interval):
-                    patches.append(imgs_or_slides[x:x + size, y:y + size])
+        elif self.mode == "ROI":
+            for x in np.arange(0, xborder + 1, interval[0]):
+                for y in np.arange(0, yborder + 1, interval[1]):
                     patches_grid.append((x, y))
                 if patches_grid[-1][1] != yborder:
-                    patches.append(imgs_or_slides[x:x + size, yborder:])
                     patches_grid.append((x, yborder))
 
             if patches_grid[-1][0] != xborder:
-                for y in np.arange(0, yborder + 1, interval):
-                    patches.append(imgs_or_slides[xborder:, y:y + size])
+                for y in np.arange(0, yborder + 1, interval[1]):
                     patches_grid.append((xborder, y))
 
                 if patches_grid[-1][1] != yborder:
-                    patches.append(imgs_or_slides[xborder:, yborder:])
                     patches_grid.append((xborder, yborder))
         else:
             raise TypeError("Invalid image type.")
-        return patches, patches_grid
+        return patches_grid
+
+    def get_a_patch(self, idx):
+
+        if self.mode == "WSI":
+            image_file = os.path.join(self.filepath, sorted(os.listdir(self.filepath))[self.imageIDX[idx]])
+            slide = OpenSlide(image_file)
+            x, y = self.images_grid[idx]
+            patch = np.asarray(slide.read_region((x, y), level=0, size=tuple(self.patch_size)).convert('RGB'))
+            slide.close()
+
+        elif self.mode == "ROI":
+            image_file = os.path.join(self.filepath, sorted(os.listdir(self.filepath))[self.imageIDX[idx]])
+            image = io.imread(image_file).astype(np.uint8)
+            x, y = self.images_grid[idx]
+            patch = image[x:x + self.patch_size[0], y:y + self.patch_size[1]]
+            del image
+
+        else:
+            patch = self.images[idx]
+        return patch, self.imageIDX[idx]
 
     def __getitem__(self, idx):
 
-        image = self.images[idx]
-        image = self.transform(image)
-
-        return image
+        patch, _ = self.get_a_patch(idx)
+        patch = self.transform(patch)
+        return patch
 
     def __len__(self):
 
-        return len(self.images)
-
+        if self.mode == "patch":
+            return len(self.images)
+        else:
+            return len(self.images_grid)
 
 def get_tiles(image, interval, size):
     """
-    在每张图片上生成 tile 实例。
+    划分实例。
     :param image: 输入图片矩阵，299 x 299 x 3
     :param interval: 取 tile 坐标点的间隔
     :param size: 单个 tile 的大小
+    :return: 每个实例 tile 的左上角坐标的列表
     """
 
     tiles = []

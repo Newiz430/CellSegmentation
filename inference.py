@@ -45,10 +45,7 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
 def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
 
-    # if mode == "train":
     model.eval()
-    # else:
-    #     model.train()
 
     # probs = torch.tensor(())
     # nums = torch.tensor(())
@@ -139,7 +136,8 @@ def inference_seg(loader, model, device, mode='train'):
         for i, data in enumerate(seg_bar):
             output = model(data.to(device))
             if mode == 'test':
-                output = F.softmax(output)
+                output = F.softmax(output, dim=1)[:, 1]  # note: channel 1 for pos_mask=1 and bg=0
             masks.append(output.cpu().numpy())
 
     return np.concatenate(masks)
+

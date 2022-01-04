@@ -38,7 +38,7 @@ class WeightedMSELoss(nn.Module):
 #     for i in range(inputs.size(0)):
 #         # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
 #         dice += dice_coef(inputs[i], targets[i], epsilon)
-#     return dice
+#     return 1 - dice
 
 
 class DiceLoss(nn.Module):

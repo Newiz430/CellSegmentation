@@ -2,11 +2,12 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
-from torch.nn import BCELoss, CrossEntropyLoss as CELoss
+from torch.nn import CrossEntropyLoss as CELoss
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import *
 
 from .losses import DiceLoss
+
 
 def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, gamma):
     """Tile training for one epoch.
@@ -106,7 +107,6 @@ def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, 
 
 
 def train_image_cls(loader, epoch, total_epochs, model, device, crit_cls, optimizer, scheduler):
-
     # image training, dataset.mode = 5
     model.train()
 
@@ -138,7 +138,6 @@ def train_image_cls(loader, epoch, total_epochs, model, device, crit_cls, optimi
 
 
 def train_image_reg(loader, epoch, total_epochs, model, device, crit_reg, optimizer, scheduler):
-
     # image training, dataset.mode = 5
     model.train()
 
@@ -170,8 +169,7 @@ def train_image_reg(loader, epoch, total_epochs, model, device, crit_reg, optimi
     return image_reg_loss
 
 
-def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, delta):
-
+def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler):
     # segmentation training
     model.train()
 
@@ -188,13 +186,12 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler, 
         # output: [n, 2, 299, 299]
         # mask:   [n,    299, 299]
         ce = CELoss()(output, mask.to(dtype=torch.long))
-        dice = DiceLoss()(F.softmax(output), mask)
-        # bce = BCELoss()(output[:, 0], mask)
-        loss = delta * (dice + ce)
-        # loss = delta * (
-        #     DiceLoss()(F.softmax(output), mask) +
-        #     BCELoss()(output[:, 0], mask)
-        # )
+        # dice = DiceLoss()(F.softmax(output), mask)
+        print(f"ce:{ce}"
+        #     f", dice:{dice}"
+             )
+        # loss = dice + ce
+        loss = ce
         loss.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
@@ -300,5 +297,3 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
     # image_seg_loss /= len(loader.dataset)
     image_seg_loss = 0.
     return tile_loss, image_cls_loss, image_reg_loss, image_seg_loss, image_loss
-
-

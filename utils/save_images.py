@@ -1,3 +1,4 @@
+import warnings
 import os
 from tqdm import tqdm
 import csv
@@ -6,6 +7,7 @@ import numpy as np
 import cv2
 from skimage import io, morphology
 
+warnings.filterwarnings("ignore")
 
 def save_images(dataset, prefix, output_path, num_of_imgs=0):
     """把 hdf5 数据中的图像以 <name>_<idx>.png 的名称导出。
@@ -48,8 +50,8 @@ def generate_masks(dataset, tiles, groups, preprocess, save_masks=True, output_p
             pseudo_masks[i] = preprocess_masks(img, pseudo_masks[i])
 
         if save_masks:
-            io.imsave(os.path.join(output_path, "rgb/{}.png".format(i + 1)), np.uint8(img))
-            io.imsave(os.path.join(output_path, "mask/{}.png".format(i + 1)), np.uint8(pseudo_masks[i] * 255))
+            io.imsave(os.path.join(output_path, "rgb/{:05}.png".format(i + 1)), np.uint8(img))
+            io.imsave(os.path.join(output_path, "mask/{:05}.png".format(i + 1)), np.uint8(pseudo_masks[i] * 255))
 
     if save_masks:
         print("Original images & masks saved in \'{}\'.".format(output_path))
@@ -87,7 +89,7 @@ def preprocess_masks(img, mask):
 #
 #         mask = cv2.applyColorMap(255 - np.uint8(255 * mask), cv2.COLORMAP_JET)
 #         img = img * 0.5 + mask * 0.5
-#         io.imsave(os.path.join(output_path, "test_{}.png".format(i)), np.uint8(img))
+#         io.imsave(os.path.join(output_path, "test_{:05}.png".format(i)), np.uint8(img))
 
 
 def heatmap(testset, tiles, probs, groups, csv_file, output_path):
@@ -111,22 +113,29 @@ def heatmap(testset, tiles, probs, groups, csv_file, output_path):
 
         mask = cv2.applyColorMap(255 - np.uint8(255 * masks[i]), cv2.COLORMAP_JET)
         img = cv2.addWeighted(img, 0.5, mask, 0.5, 0)
-        io.imsave(os.path.join(output_path, "test_{}.png".format(i + 1)), np.uint8(img))
+        io.imsave(os.path.join(output_path, "test_{:05}.png".format(i + 1)), np.uint8(img))
 
 
-def save_images_with_masks(images, masks, threshold, output_path):
+def save_images_with_masks(images, masks, threshold, output_path, soft=False):
     """
     images: list of 3-d RGB np.ndarrays (3, h, w)
-    masks: list of 3-d output np.ndarrays (2, h, w)
+    masks: list of 2-d output np.ndarrays (h, w)
     """
 
     for i in tqdm(range(len(images)), desc="generating segmentation results"):
-        mask = masks[i][0] > threshold
+        classes = masks[i] > threshold
+        if soft:
+            soft_dir = os.path.join(output_path, 'soft')
+            if not os.path.exists(soft_dir):
+                os.mkdir(soft_dir)
+            io.imsave(os.path.join(soft_dir, '{:05}.png'.format(i + 1)), np.uint8(255 * masks[i] * classes))
+            mask = cv2.applyColorMap(255 - np.uint8(255 * masks[i] * classes), cv2.COLORMAP_JET)
+            images[i] = cv2.addWeighted(images[i], 0.5, mask, 0.5, 0)
+        else:
+            for ch in range(3):
+                images[i][:, :, ch] = images[i][:, :, ch] * 0.5 + np.uint8(255 * classes) * 0.5
 
-        for ch in range(3):
-            images[i][:, :, ch] = images[i][:, :, ch] * 0.4 + np.uint8(255 * mask) * 0.6
-
-        io.imsave(os.path.join(output_path, 'test_{}.png'.format(i + 1)), np.uint8(images[i]))
+        io.imsave(os.path.join(output_path, 'test_{:05}.png'.format(i + 1)), np.uint8(images[i]))
 
     print("Test results saved in \'{}\'.".format(output_path))
 

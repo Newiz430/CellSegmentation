@@ -334,7 +334,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
-    # data setup
+    # data loading
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset("data/training.h5", kfold=kfold, num_of_imgs=100 if args.debug else 0)
     valset = LystoDataset("data/training.h5", train=False, kfold=kfold, num_of_imgs=100 if args.debug else 0)

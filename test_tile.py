@@ -119,7 +119,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
-    print('Loading Dataset ...')
+    # data loading
     testset = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval,
                            num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
