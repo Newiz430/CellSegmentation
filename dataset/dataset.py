@@ -427,7 +427,9 @@ class MaskTestset(Dataset):
             self.imageIDX = []      # list ( n )
             self.image_size = []    # list ( ? )
 
-            for i, file in enumerate(tqdm(sorted(os.listdir(self.filepath)), desc="loading images")):
+            files = [f for f in sorted(os.listdir(self.filepath))
+                     if os.path.isfile(os.path.join(self.filepath, f))]
+            for i, file in enumerate(tqdm(files, desc="loading images")):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
                 if file.endswith((".svs", ".tiff")):
@@ -520,7 +522,6 @@ class MaskTestset(Dataset):
             image = io.imread(image_file).astype(np.uint8)
             x, y = self.images_grid[idx]
             patch = image[x:x + self.patch_size[0], y:y + self.patch_size[1]]
-            del image
 
         else:
             patch = self.images[idx]
