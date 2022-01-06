@@ -1,9 +1,11 @@
 import os
+import glob
 import shutil
 import argparse
 import time
 import csv
 from collections import OrderedDict
+import traceback
 from tqdm import tqdm
 
 import numpy as np
@@ -44,6 +46,8 @@ parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
                     help='path of output masked images (default: ./output/<timestamp>)')
+parser.add_argument('--resume', type=str, default=None, metavar='IMAGE/PATH.<EXT>',
+                    help='ROI image file to continue testing if workers are killed halfway')
 parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 args = parser.parse_args()
 
@@ -52,7 +56,6 @@ def test_seg(testset, threshold, soft=False, output_path=None):
 
     global epoch, model
 
-    print('Start testing ...')
     model.eval()
 
     if testset.mode == "patch":
@@ -88,16 +91,24 @@ def test_seg(testset, threshold, soft=False, output_path=None):
         print("Test results saved in \'{}\'.".format(output_path))
 
 
-def cell_detect(testset, output_image=True, output_path=None, method="gaussianblur", eps=15, **method_kwargs):
+def cell_detect(testset, resume=None, output_image=True, output_path=None, method="gaussianblur", eps=15,
+                **method_kwargs):
 
     global epoch, model
 
     detect_path = os.path.join(output_path, 'detect')
+    tmp_path = os.path.join(detect_path, 'tmp.csv')
     if not os.path.exists(detect_path):
         os.mkdir(detect_path)
-    f = open(os.path.join(detect_path, '{}-location.csv'.format(now)), 'w', newline="")
-    w = csv.writer(f, delimiter=',')
-    w.writerow(['image_id', 'x', 'y'])
+    if resume is not None:
+        fpath = glob.glob(os.path.join(detect_path, '*-location.csv'))[-1]
+        f = open(fpath, 'a', newline="")
+        w = csv.writer(f, delimiter=',')
+    else:
+        fpath = os.path.join(detect_path, '{}-location.csv'.format(now))
+        f = open(fpath, 'w', newline="")
+        w = csv.writer(f, delimiter=',')
+        w.writerow(['image_id', 'x', 'y'])
 
     print('Start testing ...')
     model.eval()
@@ -107,72 +118,112 @@ def cell_detect(testset, output_image=True, output_path=None, method="gaussianbl
     whole_image_mask = None
     cell_count = None
 
-    seg_bar = tqdm(test_loader, desc="segmenting & mask generating")
-    # 按 batch 前向计算
-    for b, images in enumerate(seg_bar):
-        batch_counts = np.array([])
-        with torch.no_grad():
-            output = model(images.to(device))
-            output = F.softmax(output, dim=1)[:, 1].cpu().numpy()  # note: channel 1 for pos_mask=1 and bg=0
-            model.setmode("image")
-            output_reg = model(images.to(device))[1].detach()[:, 0].clone().cpu()
-            output_reg = np.round(output_reg.numpy()).astype(int)
-            batch_counts = np.concatenate((batch_counts, output_reg))
-            model.setmode("segment")
+    try:
 
-        # 把每个 batch 中的 mask 拿出来操作
-        for i, mask in enumerate(output):
-            mask = np.uint8(255 * mask)  # no threshold
-            patch_id = b * len(output) + i  # mask 的 patch 索引，用于查找对应的 slide
-            slideidx = testset.imageIDX[patch_id]  # slideidx 表示 mask 属于第几张图
-            mask_grid = testset.images_grid[patch_id]  # mask_grid 表示 mask 在 slide 上的位置(左上角的坐标)
-            # 判断当前 imageIDX，如果还是这一张，就继续填充，不是，就进行聚类、检测、输出、释放内存，新建下一张图
-            if imageIDX is None:
-                imageIDX = slideidx
-                image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
-                whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
-                cell_count = 0
+        seg_bar = tqdm(test_loader, desc="segmenting & mask generating")
+        # 按 batch 前向计算
+        for b, images in enumerate(seg_bar):
+            batch_counts = np.array([])
+            with torch.no_grad():
+                output = model(images.to(device))
+                output = F.softmax(output, dim=1)[:, 1].cpu().numpy()  # note: channel 1 for pos_mask=1 and bg=0
+                model.setmode("image")
+                output_reg = model(images.to(device))[1].detach()[:, 0].clone().cpu()
+                output_reg = np.round(output_reg.numpy()).astype(int)
+                batch_counts = np.concatenate((batch_counts, output_reg))
+                model.setmode("segment")
 
-            elif slideidx != imageIDX:
-                io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
-                print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-                output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
-                for x, y in output_grid:
-                    if image_file.find("-") > 0:
-                        x += int(image_file.split(sep='-', maxsplit=1)[1])
-                        w.writerow([image_file.split(sep='-', maxsplit=1)[0], x, y])
-                    else:
-                        w.writerow([image_file, x, y])
+            # 把每个 batch 中的 mask 拿出来操作
+            for i, mask in enumerate(output):
+                mask = np.uint8(255 * mask)  # no threshold
+                patch_id = b * len(output) + i  # mask 的 patch 索引，用于查找对应的 slide
+                slideidx = testset.imageIDX[patch_id]  # slideidx 表示 mask 属于第几张图
+                mask_grid = testset.images_grid[patch_id]  # mask_grid 表示 mask 在 slide 上的位置(左上角的坐标)
+                # 判断当前 imageIDX，如果还是这一张，就继续填充，不是，就进行聚类、检测、输出、释放内存，新建下一张图
+                if imageIDX is None:
+                    imageIDX = slideidx
+                    image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
+                    whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
+                    cell_count = 0
 
-                if output_image:
-                    output_slide = locate_cells(imageIDX, output_grid)
-                    io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))),
-                              output_slide)
+                elif slideidx != imageIDX:
+                    io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
+                    print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
+                    output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
+                    for x, y in output_grid:
+                        if image_file.find("-") > 0:
+                            x += int(image_file.split(sep='-', maxsplit=1)[1])
+                            w.writerow([image_file.split(sep='-', maxsplit=1)[0], x, y])
+                        else:
+                            w.writerow([image_file, x, y])
 
-                imageIDX = slideidx
-                image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
-                whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
-                cell_count = 0
+                    if output_image:
+                        output_slide = locate_cells(imageIDX, output_grid)
+                        io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))),
+                                  output_slide)
 
-            whole_image_mask[mask_grid[0]:mask_grid[0] + testset.patch_size[0],
-                             mask_grid[1]:mask_grid[1] + testset.patch_size[1]] = mask
-            cell_count += batch_counts[i]
+                    imageIDX = slideidx
+                    image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
+                    whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
+                    cell_count = 0
 
-    io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
-    print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-    output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
-    for x, y in output_grid:
-        if image_file.find("-") > 0:
-            x += int(image_file.split(sep='-', maxsplit=1)[1])
-            w.writerow([image_file.split(sep='-', maxsplit=1)[0], x, y])
-        else:
+                whole_image_mask[mask_grid[0]:mask_grid[0] + testset.patch_size[0],
+                                 mask_grid[1]:mask_grid[1] + testset.patch_size[1]] = mask
+                cell_count += batch_counts[i]
+
+        io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
+        print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
+        output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
+        for x, y in output_grid:
+            if image_file.find("-") > 0:
+                x += int(image_file.split(sep='-', maxsplit=1)[1])
             w.writerow([image_file, x, y])
-    if output_image:
-        output_slide = locate_cells(imageIDX, output_grid)
-        io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))), output_slide)
+        if output_image:
+            output_slide = locate_cells(imageIDX, output_grid)
+            io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))), output_slide)
 
-    f.close()
-    print("Test results saved in \'{}\'.".format(detect_path))
+        f.close()
+
+        # format correction
+        tmp = open(tmp_path, 'w', newline="")
+        f = open(fpath, 'r')
+        r = csv.reader(f, delimiter=',')
+        w = csv.writer(tmp, delimiter=',')
+        for row in r:
+            row[0] = row[0].split(sep='-', maxsplit=1)[0]
+            w.writerow(row)
+        f.close()
+        tmp.close()
+        os.remove(fpath)
+        os.rename(tmp_path, fpath)
+
+    except RuntimeError:
+
+        del output, output_grid, output_slide, whole_image_mask
+        f.close()
+
+        # rollback
+        f = open(fpath, 'r')
+        tmp = open(tmp_path, 'w', newline="")
+        r = csv.reader(f, delimiter=',')
+        w = csv.writer(tmp, delimiter=',')
+        for row in r:
+            if not row[0] == image_file:
+                w.writerow(row)
+        f.close()
+        tmp.close()
+        os.remove(fpath)
+        os.rename(tmp_path, fpath)
+
+        traceback.print_exc()
+        print("Exception catched! Current results saved in \'{}\'. \n"
+              "If the halt is caused by cache overflow, "
+              "you may run this script again with argument \'--resume {}.png\'? "
+              "See \'python test_seg.py -h\' for more details. "
+              .format(fpath, image_file))
+
+    finally:
+        print("Test results saved in \'{}\'.".format(detect_path))
 
 
 def crop_wsi(data_path):
@@ -182,7 +233,7 @@ def crop_wsi(data_path):
         os.mkdir(backup_path)
 
     for file in tqdm(sorted(os.listdir(data_path)), desc="WSI size checking & cropping"):
-        if os.path.getsize(os.path.join(data_path, file)) > 7e+7:
+        if os.path.getsize(os.path.join(data_path, file)) > 5e+7:
             wsi = io.imread(os.path.join(data_path, file))
             file = os.path.splitext(file)[0]
             if file.find("-") > 0:
@@ -200,7 +251,7 @@ def crop_wsi(data_path):
                 shutil.move(os.path.join(data_path, file + '.png'), backup_path)
 
     for file in sorted(os.listdir(data_path)):
-        if os.path.getsize(os.path.join(data_path, file)) > 7e+7:
+        if os.path.getsize(os.path.join(data_path, file)) > 5e+7:
             print("Huge images still exist. Cropping again... ")
             crop_wsi(data_path)
 
@@ -278,8 +329,8 @@ if __name__ == "__main__":
     crop_wsi(args.data_path)
 
     # data loading
-    testset = MaskTestset(args.data_path, num_of_imgs=1 if args.debug else 0)
-    # testset = MaskTestset(args.data_path, num_of_imgs=20 if args.debug else 0)
+    testset = MaskTestset(args.data_path, resume=args.resume, num_of_imgs=1 if args.debug else 0)
+    # testset = MaskTestset(args.data_path, resume=args.resume, num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
 
@@ -310,8 +361,9 @@ if __name__ == "__main__":
                 "maskSize": cv2.DIST_MASK_PRECISE
             }
         }
-        cell_detect(testset, output_image=False, output_path=args.output, method=args.smooth_method, 
+        cell_detect(testset, resume=args.resume, output_image=False, output_path=args.output, method=args.smooth_method,
                     eps=args.eps, **smooth_params[args.smooth_method])
     else:
         raise Exception("Something wrong in setting test modes. "
-                        "Choose either \'--draw_masks\' or \'--detect\'. ")
+                        "Choose either \'--draw_masks\' or \'--detect\'. "
+                        "See \'python test_seg.py -h\' for more details. ")

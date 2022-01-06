@@ -415,7 +415,7 @@ class Maskset(Dataset):
 
 class MaskTestset(Dataset):
 
-    def __init__(self, filepath, num_of_imgs=0):
+    def __init__(self, filepath, num_of_imgs=0, resume=None):
 
         super(MaskTestset, self).__init__()
 
@@ -429,6 +429,8 @@ class MaskTestset(Dataset):
 
             files = [f for f in sorted(os.listdir(self.filepath))
                      if os.path.isfile(os.path.join(self.filepath, f))]
+            if resume is not None:
+                files[:files.index(resume)] = []
             for i, file in enumerate(tqdm(files, desc="loading images")):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
