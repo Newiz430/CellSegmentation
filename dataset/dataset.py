@@ -165,8 +165,8 @@ class LystoDataset(Dataset):
 
         # alternative training mode
         elif self.mode == 2:
-            assert len(
-                self.tiles_grid) > 0, "Dataset tile size and interval have to be settled for alternative training. "
+            assert len(self.tiles_grid) > 0, \
+                "Dataset tile size and interval have to be settled for alternative training. "
 
             # Get images
             image = self.images[idx]
@@ -415,7 +415,7 @@ class Maskset(Dataset):
 
 class MaskTestset(Dataset):
 
-    def __init__(self, filepath, num_of_imgs=0, resume=None):
+    def __init__(self, filepath, num_of_imgs=0, resume_from=None):
 
         super(MaskTestset, self).__init__()
 
@@ -427,11 +427,11 @@ class MaskTestset(Dataset):
             self.imageIDX = []      # list ( n )
             self.image_size = []    # list ( ? )
 
-            files = [f for f in sorted(os.listdir(self.filepath))
-                     if os.path.isfile(os.path.join(self.filepath, f))]
-            if resume is not None:
-                files[:files.index(resume)] = []
-            for i, file in enumerate(tqdm(files, desc="loading images")):
+            self.files = [f for f in sorted(os.listdir(self.filepath))
+                          if os.path.isfile(os.path.join(self.filepath, f))]
+            if resume_from is not None:
+                self.files[:self.files.index(resume_from)] = []
+            for i, file in enumerate(tqdm(self.files, desc="loading images")):
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
                 if file.endswith((".svs", ".tiff")):
@@ -513,14 +513,14 @@ class MaskTestset(Dataset):
     def get_a_patch(self, idx):
 
         if self.mode == "WSI":
-            image_file = os.path.join(self.filepath, sorted(os.listdir(self.filepath))[self.imageIDX[idx]])
+            image_file = os.path.join(self.filepath, self.files[self.imageIDX[idx]])
             slide = OpenSlide(image_file)
             x, y = self.images_grid[idx]
             patch = np.asarray(slide.read_region((x, y), level=0, size=tuple(self.patch_size)).convert('RGB'))
             slide.close()
 
         elif self.mode == "ROI":
-            image_file = os.path.join(self.filepath, sorted(os.listdir(self.filepath))[self.imageIDX[idx]])
+            image_file = os.path.join(self.filepath, self.files[self.imageIDX[idx]])
             image = io.imread(image_file).astype(np.uint8)
             x, y = self.images_grid[idx]
             patch = image[x:x + self.patch_size[0], y:y + self.patch_size[1]]
@@ -541,6 +541,7 @@ class MaskTestset(Dataset):
             return len(self.images)
         else:
             return len(self.images_grid)
+
 
 def get_tiles(image, interval, size):
     """

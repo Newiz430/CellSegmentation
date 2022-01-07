@@ -46,8 +46,9 @@ parser.add_argument('-d', '--device', type=int, default=0,
                     help='CUDA device id if available (default: 0)')
 parser.add_argument('-o', '--output', type=str, default='output/{}'.format(now), metavar='OUTPUT/PATH',
                     help='path of output masked images (default: ./output/<timestamp>)')
-parser.add_argument('--resume', type=str, default=None, metavar='IMAGE/PATH.<EXT>',
-                    help='ROI image file to continue testing if workers are killed halfway')
+parser.add_argument('--resume_from', type=str, default=None, metavar='IMAGE_FILE_NAME.<EXT>',
+                    help='ROI image file name (path set in --data_path) to continue testing '
+                         'if workers are killed halfway')
 parser.add_argument('--debug', action='store_true', help='use little data for debugging')
 args = parser.parse_args()
 
@@ -91,7 +92,7 @@ def test_seg(testset, threshold, soft=False, output_path=None):
         print("Test results saved in \'{}\'.".format(output_path))
 
 
-def cell_detect(testset, resume=None, output_image=True, output_path=None, method="gaussianblur", eps=15,
+def cell_detect(testset, resume=False, output_image=True, output_path=None, method="gaussianblur", eps=15,
                 **method_kwargs):
 
     global epoch, model
@@ -100,7 +101,7 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
     tmp_path = os.path.join(detect_path, 'tmp.csv')
     if not os.path.exists(detect_path):
         os.mkdir(detect_path)
-    if resume is not None:
+    if resume:
         fpath = glob.glob(os.path.join(detect_path, '*-location.csv'))[-1]
         f = open(fpath, 'a', newline="")
         w = csv.writer(f, delimiter=',')
@@ -142,14 +143,15 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
                 # 判断当前 imageIDX，如果还是这一张，就继续填充，不是，就进行聚类、检测、输出、释放内存，新建下一张图
                 if imageIDX is None:
                     imageIDX = slideidx
-                    image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
+                    image_file = os.path.splitext(testset.files[imageIDX])[0]
                     whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
                     cell_count = 0
 
                 elif slideidx != imageIDX:
                     io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
                     print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-                    output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
+                    output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps,
+                                                               **method_kwargs)
                     for x, y in output_grid:
                         if image_file.find("-") > 0:
                             x += int(image_file.split(sep='-', maxsplit=1)[1])
@@ -158,12 +160,12 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
                             w.writerow([image_file, x, y])
 
                     if output_image:
-                        output_slide = locate_cells(imageIDX, output_grid)
+                        output_slide = locate_cells(testset, imageIDX, output_grid, discarded)
                         io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))),
                                   output_slide)
 
                     imageIDX = slideidx
-                    image_file = os.path.splitext(sorted(os.listdir(testset.filepath))[imageIDX])[0]
+                    image_file = os.path.splitext(testset.files[imageIDX])[0]
                     whole_image_mask = np.zeros(testset.image_size[imageIDX][:-1], dtype=np.uint8)
                     cell_count = 0
 
@@ -173,13 +175,13 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
 
         io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
         print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-        output_grid = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
+        output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
         for x, y in output_grid:
             if image_file.find("-") > 0:
                 x += int(image_file.split(sep='-', maxsplit=1)[1])
             w.writerow([image_file, x, y])
         if output_image:
-            output_slide = locate_cells(imageIDX, output_grid)
+            output_slide = locate_cells(testset, imageIDX, output_grid, discarded)
             io.imsave(os.path.join(detect_path, '{}_{}cells.png'.format(image_file, int(cell_count))), output_slide)
 
         f.close()
@@ -216,9 +218,9 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
         os.rename(tmp_path, fpath)
 
         traceback.print_exc()
-        print("Exception catched! Current results saved in \'{}\'. \n"
-              "If the halt is caused by cache overflow, "
-              "you may run this script again with argument \'--resume {}.png\'? "
+        print("Exception catched! Current results saved in \'{}\'.\n"
+              "If workers are killed unexpectedly by cache overflow, "
+              "you may run this script again with extra argument \'--resume_from {}.png\'?\n"
               "See \'python test_seg.py -h\' for more details. "
               .format(fpath, image_file))
 
@@ -226,14 +228,14 @@ def cell_detect(testset, resume=None, output_image=True, output_path=None, metho
         print("Test results saved in \'{}\'.".format(detect_path))
 
 
-def crop_wsi(data_path):
+def crop_wsi(data_path, max_size=5e+7):
 
     backup_path = os.path.join(data_path, 'backup')
     if not os.path.exists(backup_path):
         os.mkdir(backup_path)
 
     for file in tqdm(sorted(os.listdir(data_path)), desc="WSI size checking & cropping"):
-        if os.path.getsize(os.path.join(data_path, file)) > 5e+7:
+        if os.path.getsize(os.path.join(data_path, file)) > max_size:
             wsi = io.imread(os.path.join(data_path, file))
             file = os.path.splitext(file)[0]
             if file.find("-") > 0:
@@ -251,12 +253,12 @@ def crop_wsi(data_path):
                 shutil.move(os.path.join(data_path, file + '.png'), backup_path)
 
     for file in sorted(os.listdir(data_path)):
-        if os.path.getsize(os.path.join(data_path, file)) > 5e+7:
+        if os.path.getsize(os.path.join(data_path, file)) > max_size:
             print("Huge images still exist. Cropping again... ")
             crop_wsi(data_path)
 
 
-def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.3, window_size=16, interval=10, eps=15,
+def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, window_size=16, interval=10, eps=15,
                       **method_kwargs):
     """Meanshift clustering for excluding redundant points. """
     tiles = get_tiles(mask, interval, window_size)
@@ -280,7 +282,7 @@ def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.3, wind
 
     for tw in tqdm(track_windows, desc="cell clustering", colour='red', leave=False):
         ret, (y, x, w, h) = cv2.meanShift(mask, tw, crit_stop)
-        grids.append((x, y))
+        grids.append((x + window_size // 2, y + window_size // 2))
         iters.append(ret)
 
     grids = np.asarray(grids)
@@ -293,21 +295,25 @@ def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.3, wind
             new_grids.append(np.mean(grids, axis=0, where=idx).round().astype(int))
 
         # match grids with cell assessment by max pooling
-        grid_weight = np.asarray([mask[x + window_size // 2, y + window_size // 2] for x, y in new_grids])
+        grid_weight = np.asarray([mask[x, y] for x, y in new_grids])
         new_grids = np.asarray(new_grids)[np.argsort(grid_weight)[::-1]]
 
     # if number of cells larger than points, do nothing
     # otherwise set a limit for points
-    return new_grids[:cell_count]
+    return new_grids[:cell_count], new_grids[cell_count:]
 
 
-def locate_cells(slideidx, grids, window_size=16):
+def locate_cells(dataset, slideidx, grids, discarded_grids=None):
 
     color = [255, 0, 0]
-    slide_file = sorted(os.listdir(testset.filepath))[slideidx]
-    slide = io.imread(os.path.join(testset.filepath, slide_file)).astype(np.uint8)
+    slide_file = dataset.files[slideidx]
+    slide = io.imread(os.path.join(dataset.filepath, slide_file)).astype(np.uint8)
     for y, x in grids:
-        slide = cv2.circle(slide, (x + window_size // 2, y + window_size // 2), 4, color, cv2.FILLED)
+        slide = cv2.circle(slide, (x, y), 4, color, cv2.FILLED)
+    if discarded_grids is not None:
+        color_discarded = [0, 0, 255]
+        for y, x in discarded_grids:
+            slide = cv2.circle(slide, (x, y), 4, color_discarded, cv2.FILLED)
 
     return slide
 
@@ -329,8 +335,8 @@ if __name__ == "__main__":
     crop_wsi(args.data_path)
 
     # data loading
-    testset = MaskTestset(args.data_path, resume=args.resume, num_of_imgs=1 if args.debug else 0)
-    # testset = MaskTestset(args.data_path, resume=args.resume, num_of_imgs=20 if args.debug else 0)
+    testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=1 if args.debug else 0)
+    # testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
 
@@ -361,8 +367,8 @@ if __name__ == "__main__":
                 "maskSize": cv2.DIST_MASK_PRECISE
             }
         }
-        cell_detect(testset, resume=args.resume, output_image=False, output_path=args.output, method=args.smooth_method,
-                    eps=args.eps, **smooth_params[args.smooth_method])
+        cell_detect(testset, resume=args.resume_from is not None, output_image=True, output_path=args.output,
+                    method=args.smooth_method, eps=args.eps, **smooth_params[args.smooth_method])
     else:
         raise Exception("Something wrong in setting test modes. "
                         "Choose either \'--draw_masks\' or \'--detect\'. "

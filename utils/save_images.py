@@ -9,6 +9,7 @@ from skimage import io, morphology
 
 warnings.filterwarnings("ignore")
 
+
 def save_images(dataset, prefix, output_path, num_of_imgs=0):
     """把 hdf5 数据中的图像以 <name>_<idx>.png 的名称导出。
 
@@ -143,8 +144,7 @@ def save_images_with_masks(images, masks, threshold, output_path, soft=False):
 if __name__ == "__main__":
     from dataset import LystoDataset, LystoTestset
 
-    # imageSet_test = LystoTestset("data/test.h5")
-    # save_images(imageSet_test, 'test', './data/test')
-
-    set = LystoDataset("data/training.h5")
-    save_images(set, 'train', './data/train')
+    # imageset = LystoTestset("data/test.h5")
+    # save_images(imageset, 'test', './data/test')
+    imageset = LystoDataset("data/training.h5")
+    save_images(imageset, 'train', './data/train')
