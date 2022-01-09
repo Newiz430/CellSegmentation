@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import LystoTestset
-from model import encoders
+from model import nets
 from inference import inference_image
 
 now = int(time.time())
@@ -60,12 +60,12 @@ if __name__ == "__main__":
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     f = torch.load(args.model, map_location=device)
-    model = encoders[f['encoder']]
+    model = nets[f['encoder']]
     epoch = f['epoch']
     # load params of resnet encoder and image head only
     model.load_state_dict(
         OrderedDict({k: v for k, v in f['state_dict'].items()
-                     if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+                     if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
         strict=False)
     model.setmode("image")
     model.to(device)

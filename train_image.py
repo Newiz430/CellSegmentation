@@ -17,7 +17,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from dataset import LystoDataset
-from model import encoders
+from model import nets
 from inference import inference_image
 from train import train_image, WeightedMSELoss
 from evaluate import evaluate_image
@@ -30,15 +30,17 @@ now = int(time.time())
 parser = argparse.ArgumentParser(prog="train_image.py", description='pt.1: image assessment training.')
 parser.add_argument('-e', '--epochs', type=int, default=30,
                     help='total number of epochs to train (default: 30)')
+parser.add_argument('--reg_only', action="store_true", help='only enable image regression head')
 parser.add_argument('-E', '--encoder', type=str, default='resnet50',
-                    help='structure of the shared encoder, [resnet18, resnet34, resnet50 (default)]')
+                    help='structure of the shared encoder, {\'resnet18\', \'resnet34\', \'resnet50\' (default), '
+                         '\'efficientnet_b0\', \'efficientnet_b2\'}')
 parser.add_argument('-B', '--image_batch_size', type=int, default=48,
                     help='batch size of images (default: 48)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
                     help='learning rate scheduler if necessary, '
-                         '[\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'] (default: None)')
+                         '{\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int,
@@ -74,10 +76,10 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
         print("PT.I - image classifier training ...")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
-                if device.type == 'cuda':
-                    torch.cuda.manual_seed(epoch)
-                else:
-                    torch.manual_seed(epoch)
+                # if device.type == 'cuda':
+                #     torch.cuda.manual_seed(epoch)
+                # else:
+                #     torch.manual_seed(epoch)
 
                 trainset.setmode(5)
 
@@ -144,10 +146,10 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
 
-                if device.type == 'cuda':
-                    torch.cuda.manual_seed(epoch)
-                else:
-                    torch.manual_seed(epoch)
+                # if device.type == 'cuda':
+                #     torch.cuda.manual_seed(epoch)
+                # else:
+                #     torch.manual_seed(epoch)
 
                 trainset.setmode(5)
 
@@ -292,13 +294,13 @@ def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
     """用 .pth 格式保存模型。"""
     # save params of resnet encoder and image head only
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
-                              if k.startswith(model.resnet_module_prefix +
+                              if k.startswith(model.encoder_prefix +
                                               model.image_module_prefix)})
     obj = {
         'mode': 'image',
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder_name,
+        'encoder': model.encoder.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -364,10 +366,9 @@ if __name__ == "__main__":
             model.to(device)
         return model
 
-
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-    model = encoders[args.encoder]
+    model = nets[args.encoder]
     model = to_device(model, device)
     model.setmode("image")
 
@@ -378,7 +379,7 @@ if __name__ == "__main__":
         # load params of resnet encoder and image head only
         model.load_state_dict(
             OrderedDict({k: v for k, v in cp['state_dict'].items()
-                         if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+                         if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
             strict=False)
     else:
         last_epoch = 0
@@ -405,7 +406,7 @@ if __name__ == "__main__":
             'max_lr': args.lr,  # note that input lr means max_lr here
             'epochs': args.epochs,
             'steps_per_epoch': len(train_loader),
-            'div_factor': 5.0,  # initial lr = max_lr / div_factor
+            'div_factor': 25.0,  # initial lr = max_lr / div_factor
             'pct_start': 0.3  # percent of steps in warm-up period
         },
         'ExponentialLR': {
@@ -426,17 +427,30 @@ if __name__ == "__main__":
         if cp['scheduler'] is not None and scheduler is not None:
             scheduler.load_state_dict(cp['scheduler'])
 
-    train(total_epochs=args.epochs,
-          last_epoch=last_epoch,
-          test_every=args.test_every,
-          model=model,
-          device=device,
-          crit_cls=crit_cls,
-          crit_reg=crit_reg,
-          optimizer=optimizer,
-          scheduler=scheduler,
-          output_path=args.output
-          )
+    if args.reg_only:
+        train_reg(total_epochs=args.epochs,
+                  last_epoch=last_epoch,
+                  test_every=args.test_every,
+                  model=model,
+                  device=device,
+                  crit_reg=crit_reg,
+                  optimizer=optimizer,
+                  scheduler=scheduler,
+                  output_path=args.output
+                  )
+    else:
+
+        train(total_epochs=args.epochs,
+              last_epoch=last_epoch,
+              test_every=args.test_every,
+              model=model,
+              device=device,
+              crit_cls=crit_cls,
+              crit_reg=crit_reg,
+              optimizer=optimizer,
+              scheduler=scheduler,
+              output_path=args.output
+              )
 
     # train_cls(total_epochs=args.epochs,
     #           last_epoch=last_epoch,
@@ -453,7 +467,6 @@ if __name__ == "__main__":
     #                                        last_epoch=last_epoch_for_scheduler,
     #                                        **scheduler_kwargs[args.scheduler]) \
     #     if args.scheduler is not None else None
-    #
     # train_reg(total_epochs=args.epochs,
     #           last_epoch=last_epoch,
     #           test_every=args.test_every,
@@ -464,3 +477,4 @@ if __name__ == "__main__":
     #           scheduler=scheduler,
     #           output_path=args.output
     #           )
+

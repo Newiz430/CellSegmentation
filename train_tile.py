@@ -15,7 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from dataset import LystoDataset
-from model import encoders
+from model import nets
 from inference import inference_tiles, sample
 from train import train_tile
 from evaluate import evaluate_tile
@@ -34,7 +34,7 @@ parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
                     help='learning rate scheduler if necessary, '
-                         '[\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'] (default: None)')
+                         '{\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int,
@@ -152,14 +152,14 @@ def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt2'):
     """用 .pth 格式保存模型。"""
     # save params of resnet encoder, image head and tile head only
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
-                              if k.startswith(model.resnet_module_prefix +
+                              if k.startswith(model.encoder_prefix +
                                               model.image_module_prefix +
                                               model.tile_module_prefix)})
     obj = {
         'mode': 'tile',
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder_name,
+        'encoder': model.encoder.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -228,12 +228,12 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     if args.resume:
         cp = torch.load(args.resume, map_location=device)
-        model = encoders[cp['encoder']]
+        model = nets[cp['encoder']]
         model = to_device(model, device)
         # load params of resnet encoder, tile head and image head only
         model.load_state_dict(
             OrderedDict({k: v for k, v in cp['state_dict'].items()
-                         if k.startswith(model.resnet_module_prefix + model.tile_module_prefix +
+                         if k.startswith(model.encoder_prefix + model.tile_module_prefix +
                                          model.image_module_prefix)}),
             strict=False)
         model.load_state_dict(cp['state_dict'], strict=False)
@@ -241,12 +241,12 @@ if __name__ == "__main__":
         last_epoch_for_scheduler = cp['scheduler']['last_epoch'] if cp['scheduler'] is not None else -1
     else:
         f = torch.load(args.model, map_location=device)
-        model = encoders[f['encoder']]
+        model = nets[f['encoder']]
         model = to_device(model, device)
         # load params of resnet encoder and image head only
         model.load_state_dict(
             OrderedDict({k: v for k, v in f['state_dict'].items()
-                         if k.startswith(model.resnet_module_prefix + model.image_module_prefix)}),
+                         if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
             strict=False)
         last_epoch = 0
         last_epoch_for_scheduler = -1
