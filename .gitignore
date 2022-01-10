@@ -4,8 +4,10 @@
 /data/
 /ihc/
 /runs/
+/soft/
 /.idea/
 *.pth
 *.ipynb
 .ipynb_checkpoints
 *.csv
+*.lnk
