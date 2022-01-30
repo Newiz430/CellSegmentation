@@ -120,11 +120,12 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     # data loading
-    testset = LystoTestset("data/test.h5", tile_size=args.tile_size, interval=args.interval,
+    testing_data_path = "./data"
+    testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), tile_size=args.tile_size, interval=args.interval,
                            num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
-    reg_testset = LystoTestset("data/test.h5", num_of_imgs=20 if args.debug else 0)
+    reg_testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), num_of_imgs=20 if args.debug else 0)
     reg_loader = DataLoader(reg_testset, batch_size=64, shuffle=False, num_workers=args.workers,
                             pin_memory=True)
 

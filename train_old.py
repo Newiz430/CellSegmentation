@@ -42,13 +42,12 @@ parser.add_argument('-B', '--image_batch_size', type=int, default=64,
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
-                    help='learning rate scheduler if necessary, '
-                         '{\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)')
+                    help='''learning rate scheduler if necessary, 
+                    {\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)''')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int,
-                    help='validate every (default: 1) epoch(s). '
-                         'To use all data for training, set this greater than --epochs')
+                    help='validate every (default: 1) epoch(s). To use all data for training, set this greater than --epochs')
 parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
                     help='k tiles are from a single positive cell (default: 1, standard MIL)')
 parser.add_argument('-n', '--topk_neg', default=30, type=int,
@@ -284,7 +283,7 @@ def save_model(epoch, model, mode, optimizer, scheduler, output_path, prefix='cp
         'mode': mode,
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder.encoder_name,
+        'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -348,11 +347,12 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     # data loading
+    training_data_path = "./data"
     kfold = None if args.test_every > args.epochs else 10
-    trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold,
-                            num_of_imgs=100 if args.debug else 0)
-    valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False,
-                          kfold=kfold, num_of_imgs=100 if args.debug else 0)
+    trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size,
+                            interval=args.interval, kfold=kfold, num_of_imgs=100 if args.debug else 0)
+    valset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size,
+                          interval=args.interval, train=False, kfold=kfold, num_of_imgs=100 if args.debug else 0)
 
     collate_fn = default_collate
     # TODO: how can I split the training step for distributed parallel training?

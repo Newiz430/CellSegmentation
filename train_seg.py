@@ -81,7 +81,7 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
     fconv.close()
 
     start = int(time.time())
-    with SummaryWriter() as writer:
+    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
         delta = 1
 
         print("PT.III - cell segmentation branch training ...")
@@ -94,7 +94,7 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
                 #     torch.manual_seed(epoch)
 
                 loss = train_seg(train_loader, epoch, total_epochs, model, device, optimizer,
-                                 scheduler, delta)
+                                 scheduler)
 
                 print("image seg loss: {:.4f}".format(loss))
                 fconv = open(os.path.join(output_path, '{}-seg-training.csv'.format(now)), 'a')
@@ -130,7 +130,7 @@ def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt3'):
         'mode': 'seg',
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder.encoder_name,
+        'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -196,14 +196,16 @@ if __name__ == "__main__":
         last_epoch = 0
         last_epoch_for_scheduler = -1
 
+    training_data_path = "./data"
+
     if not args.skip_draw:
         from dataset import LystoDataset
         from inference import inference_tiles
 
         print('Generating masks using the pretrained model \'{}\' ...'.format(args.model))
 
-        dataset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, augment=False,
-                               kfold=None, num_of_imgs=100 if args.debug else 0)
+        dataset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size,
+                               interval=args.interval, augment=False, kfold=None, num_of_imgs=100 if args.debug else 0)
         loader = DataLoader(dataset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                             pin_memory=False)
         dataset.setmode(1)
@@ -233,7 +235,8 @@ if __name__ == "__main__":
             from inference import inference_image
 
             # clear artifact images
-            limit_set = LystoTestset("data/training.h5", num_of_imgs=100 if args.debug else 0)
+            limit_set = LystoTestset(os.path.join(training_data_path, "training.h5"),
+                                     num_of_imgs=100 if args.debug else 0)
             limit_loader = DataLoader(limit_set, batch_size=args.image_batch_size, shuffle=False,
                                       num_workers=args.workers, pin_memory=True)
 
@@ -249,10 +252,13 @@ if __name__ == "__main__":
 
         pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess)
 
-        trainset = Maskset("data/training.h5", pseudo_masks, num_of_imgs=100 if args.debug else 0)
+        trainset = Maskset(os.path.join(training_data_path, "training.h5"), pseudo_masks,
+                           num_of_imgs=100 if args.debug else 0)
 
     else:
-        trainset = Maskset("data/training.h5", "data/pseudomask", num_of_imgs=100 if args.debug else 0)
+        trainset = Maskset(os.path.join(training_data_path, "training.h5"),
+                           os.path.join(training_data_path, "pseudomask"),
+                           num_of_imgs=100 if args.debug else 0)
 
     train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,

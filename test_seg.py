@@ -33,7 +33,7 @@ parser.add_argument('--smooth_method', type=str, default='gaussianblur',
                          '(default: \'gaussianblur\', using with --detect)')
 parser.add_argument('-e', '--eps', type=int, default=15,
                     help='radius of DBSCAN in cell detection (default: 15, using with --detect)')
-parser.add_argument('-D', '--data_path', type=str, default='data/test.h5',
+parser.add_argument('-D', '--data_path', type=str, default='./data/test.h5',
                     help='path to testing data (default: ./data/test.h5)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=128,
                     help='batch size of images (default: 128)')

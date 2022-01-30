@@ -94,7 +94,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
-    with SummaryWriter() as writer:
+    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
         gamma = 1.
 
         print("PT.II - tile classifier training ...")
@@ -159,7 +159,7 @@ def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt2'):
         'mode': 'tile',
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder.encoder_name,
+        'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -180,6 +180,7 @@ def add_scalar_metrics(writer, epoch, metrics):
 
 
 if __name__ == "__main__":
+
     print("Training settings: ")
     print("Training Mode: {} | Device: {} | Model: {} | {} epoch(s) in total\n"
           "{} | Initial LR: {} | Output directory: {}"
@@ -193,10 +194,11 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     # data loading
+    training_data_path = "./data"
     kfold = None if args.test_every > args.epochs else 10
-    trainset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, kfold=kfold,
+    trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size, interval=args.interval, kfold=kfold,
                             num_of_imgs=100 if args.debug else 0)
-    valset = LystoDataset("data/training.h5", tile_size=args.tile_size, interval=args.interval, train=False,
+    valset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size, interval=args.interval, train=False,
                           kfold=kfold, num_of_imgs=100 if args.debug else 0)
 
     # TODO: how can I split the training step for distributed parallel training?

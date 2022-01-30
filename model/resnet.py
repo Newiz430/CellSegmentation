@@ -11,7 +11,7 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
-__all__ = ["resnet18", "resnet34", "resnet50"]
+__all__ = ["MILresnet18", "MILresnet34", "MILresnet50"]
 
 
 class BasicBlock(nn.Module):
@@ -80,12 +80,14 @@ class Bottleneck(nn.Module):
         return out
 
 
-class _ResNetEncoder(nn.Module):
+class MILNet(nn.Module):
 
-    def __init__(self, encoder, block, layers, **kwargs):
+    def __init__(self, encoder, block, layers, num_classes=1000, expansion=1):
 
+        self.mode = None
         self.encoder_name = encoder
-        self.module_prefix = (
+
+        self.encoder_prefix = (
             "conv1",
             "bn1",
             "relu",
@@ -94,21 +96,90 @@ class _ResNetEncoder(nn.Module):
             "layer3",
             "layer4"
         )
-        self.block = block
-        self.inplanes = 64
-        super(_ResNetEncoder, self).__init__()
+        self.image_module_prefix = (
+            "fc_image_cls",
+            "fc_image_reg"
+        )
+        self.tile_module_prefix = (
+            "fc_tile",
+        )
+        self.seg_module_prefix = (
+            "upconv",
+            "seg_out_conv"
+        )
 
+        self.inplanes = 64
+        super(MILNet, self).__init__()
+        # encoder
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(self.block, 64, layers[0])
-        self.layer2 = self._make_layer(self.block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(self.block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(self.block, 512, layers[3], stride=2)
+        self.layer1 = self._make_layer(block, 64,  layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+        # encoder 以下部分
+        def init_tile_modules():
+            self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
+            self.maxpool_tile = nn.AdaptiveMaxPool2d((1, 1))
+            self.fc_tile = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(512 * block.expansion, num_classes)
+            )
+
+        def init_image_modules(map_size):
+            self.avgpool_image = nn.AdaptiveAvgPool2d((map_size, map_size))
+            self.maxpool_image = nn.AdaptiveMaxPool2d((map_size, map_size))
+            self.fc_image_cls = nn.Sequential(
+                nn.Flatten(),
+                nn.BatchNorm1d(512 * map_size * map_size * block.expansion),
+                nn.Dropout(p=0.25),
+                nn.ReLU(inplace=True),
+                nn.Linear(512 * map_size * map_size * block.expansion, 64),
+                nn.BatchNorm1d(64),
+                nn.Dropout(),
+                nn.Linear(64, 7)
+            )
+            self.fc_image_reg = nn.Sequential(
+                nn.Flatten(),
+                nn.BatchNorm1d(512 * map_size * map_size * block.expansion),
+                nn.Dropout(p=0.25),
+                nn.ReLU(inplace=True),
+                nn.Linear(512 * map_size * map_size * block.expansion, 64),
+                nn.BatchNorm1d(64),
+                nn.Dropout(),
+                nn.Linear(64, 1),
+                nn.ReLU(inplace=True)
+            )
+
+        def init_seg_modules():
+            # 图像上采样卷积层
+            self.upconv1 = self.upsample_conv(512 * expansion, 256 * expansion)
+            self.upconv2 = self.upsample_conv(512 * expansion, 256 * expansion)
+            self.upconv3 = self.upsample_conv(256 * expansion, 128 * expansion)
+            self.upconv4 = self.upsample_conv(256 * expansion, 128 * expansion)
+            self.upconv5 = self.upsample_conv(128 * expansion, 64 * expansion)
+            self.upconv6 = self.upsample_conv(128 * expansion, 64 * expansion)
+            self.upconv7 = self.upsample_conv(64 * expansion, 64 if expansion == 1 else 32 * expansion)
+            self.upconv8 = self.upsample_conv(64 if expansion == 1 else 32 * expansion, 64)
+            self.seg_out_conv = nn.Conv2d(64, 2, kernel_size=1)
+
+        init_tile_modules()
+        init_image_modules(map_size=1)
+        init_seg_modules()
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def _make_layer(self, block, planes, blocks, stride=1):
-
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -124,7 +195,46 @@ class _ResNetEncoder(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor, return_intermediate: bool = False):
+    @staticmethod
+    def upsample_conv(in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True))
+
+    def set_encoder_grads(self, requires_grad):
+
+        self.conv1.requires_grad_(requires_grad)
+        self.bn1.requires_grad_(requires_grad)
+        self.relu.requires_grad_(requires_grad)
+        self.maxpool.requires_grad_(requires_grad)
+        self.layer1.requires_grad_(requires_grad)
+        self.layer2.requires_grad_(requires_grad)
+        self.layer3.requires_grad_(requires_grad)
+        self.layer4.requires_grad_(requires_grad)
+
+    def set_tile_module_grads(self, requires_grad):
+
+        self.avgpool_tile.requires_grad_(requires_grad)
+        self.maxpool_tile.requires_grad_(requires_grad)
+        self.fc_tile.requires_grad_(requires_grad)
+
+    def set_image_module_grads(self, requires_grad):
+
+        self.avgpool_image.requires_grad_(requires_grad)
+        self.maxpool_image.requires_grad_(requires_grad)
+        self.fc_image_cls.requires_grad_(requires_grad)
+        self.fc_image_reg.requires_grad_(requires_grad)
+
+    def set_seg_module_grads(self, requires_grad):
+
+        self.upconv1.requires_grad_(requires_grad)
+        self.upconv2.requires_grad_(requires_grad)
+        self.upconv3.requires_grad_(requires_grad)
+        self.upconv4.requires_grad_(requires_grad)
+        self.seg_out_conv.requires_grad_(requires_grad)
+
+    def resnet_forward(self, x: torch.Tensor, return_intermediate: bool = False):
 
         x = self.conv1(x)       # x_tile: [nk,  64, 16, 16] x_image: [n,   64, 150, 150]
         x = self.bn1(x)
@@ -140,26 +250,129 @@ class _ResNetEncoder(nn.Module):
         else:
             return x4
 
+    def forward(self, x: torch.Tensor, freeze_bn=False):  # x_tile: [nk, 3, 32, 32] x_image: [n, 3, 299, 299]
 
-def resnet18(pretrained=False, **kwargs):
+        # Set freeze_bn=True in tile training mode to freeze E(x) & Var(x) in BatchNorm2D(x).
+        # Otherwise, assessment results will decay as tile training propels.
+        if self.mode == "tile" and freeze_bn:
+            # TODO: iterate named_modules() and use bn.eval()
+            self.eval()
+            x4 = self.resnet_forward(x, False)
+            self.train()
+        elif self.mode == "segment":
+            x4, x3, x2, x1 = self.resnet_forward(x, True)
+        else:
+            x4 = self.resnet_forward(x, False)
 
-    model = _ResNetEncoder('resnet18', BasicBlock, [2, 2, 2, 2], **kwargs)
+        if self.mode == "tile":
+
+            x = self.avgpool_tile(x4) + self.maxpool_tile(x4) # x: [nk, 512, 1, 1]
+            x = self.fc_tile(x)  # x: [nk, 512]
+
+            return x
+
+        elif self.mode == "image":
+
+            # image_cls & image_reg
+            out = self.avgpool_image(x4) + self.maxpool_image(x4)  # [n, 2048, ?, ?]
+            out_cls = self.fc_image_cls(out)  # [n, 7]
+            out_reg = self.fc_image_reg(out)  # [n, 1]
+
+            return out_cls, out_reg
+
+        elif self.mode == "segment":
+
+            out_seg = F.interpolate(x4.clone(), size=19, mode="bilinear", align_corners=True)   # out_seg: [n, 2048, 19, 19]
+            out_seg = self.upconv1(out_seg)                                                     # [n, 1024, 19, 19]
+            out_seg = torch.cat([out_seg, x3], dim=1)                                           # 连接两层，输出 [n, 2048, 19, 19]
+            out_seg = self.upconv2(out_seg)                                                     # [n, 1024, 19, 19]
+
+            out_seg = F.interpolate(out_seg, size=38, mode="bilinear", align_corners=True)      # [n, 1024, 38, 38]
+            out_seg = self.upconv3(out_seg)                                                     # [n, 512, 38, 38]
+            out_seg = torch.cat([out_seg, x2], dim=1)                                           # 连接两层，输出 [n, 1024, 38, 38]
+            out_seg = self.upconv4(out_seg)                                                     # [n, 512, 38, 38]
+
+            out_seg = F.interpolate(out_seg, size=75, mode="bilinear", align_corners=True)      # [n, 512, 75, 75]
+            out_seg = self.upconv5(out_seg)                                                     # [n, 256, 75, 75]
+            out_seg = torch.cat([out_seg, x1], dim=1)                                           # 连接两层，输出 [n, 512, 75, 75]
+            out_seg = self.upconv6(out_seg)                                                     # [n, 256, 75, 75]
+
+            out_seg = F.interpolate(out_seg, size=150, mode="bilinear", align_corners=True)     # [n, 256, 150, 150]
+            out_seg = self.upconv7(out_seg)                                                     # [n, 128, 150, 150]
+            out_seg = self.upconv8(out_seg)                                                     # [n, 64, 150, 150]
+            out_seg = F.interpolate(out_seg, size=299, mode="bilinear", align_corners=True)     # [n, 64, 299, 299]
+            out_seg = self.seg_out_conv(out_seg)                                                # [n, 1, 299, 299]
+
+            return out_seg
+
+        else:
+            raise Exception("Something wrong in setmode.")
+
+    def setmode(self, mode):
+        """
+        mode "image":   pt.1 (whole image mode), pooled feature -> image classification & regression
+        mode "tile":    pt.2 (instance mode), pooled feature -> tile classification
+        mode "segment": pt.3 (segmentation mode), pooled feature -> expanding path -> output map
+        """
+
+        if mode == "tile":
+            self.set_encoder_grads(False)
+            self.set_tile_module_grads(True)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(False)
+        elif mode == "image":
+            self.set_encoder_grads(True)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(True)
+            self.set_seg_module_grads(False)
+        elif mode == "segment":
+            self.set_encoder_grads(False)
+            self.set_tile_module_grads(False)
+            self.set_image_module_grads(False)
+            self.set_seg_module_grads(True)
+        else:
+            raise Exception("Invalid mode: {}.".format(mode))
+
+        self.mode = mode
+
+
+# def MILresnet(encoder_name, pretrained=False, **kwargs):
+#
+#     if encoder_name == 'resnet18':
+#         encoder = resnet18(pretrained, **kwargs)
+#     elif encoder_name == 'resnet34':
+#         encoder = resnet34(pretrained, **kwargs)
+#     else:
+#         encoder = resnet50(pretrained, **kwargs)
+#     model = MILNet(encoder, num_classes=2)
+#     # change num of cell classes from 1000 to 2 here to make it compatible with pretrained files
+#     model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
+#     return model
+
+
+def MILresnet18(pretrained=False, **kwargs):
+
+    model = MILNet('resnet18', BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']), strict=False)
+    # change num of cell classes from 1000 to 2 here to make it compatible with pretrained files
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model
 
 
-def resnet34(pretrained=False, **kwargs):
+def MILresnet34(pretrained=False, **kwargs):
 
-    model = _ResNetEncoder('resnet34', BasicBlock, [3, 4, 6, 3], **kwargs)
+    model = MILNet('resnet34', BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet34']), strict=False)
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model
 
 
-def resnet50(pretrained=False, **kwargs):
+def MILresnet50(pretrained=False, **kwargs):
 
-    model = _ResNetEncoder('resnet50', Bottleneck, [3, 4, 6, 3], **kwargs)
+    model = MILNet('resnet50', Bottleneck, [3, 4, 6, 3], expansion=4, **kwargs)
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)
+    model.fc_tile[1] = nn.Linear(model.fc_tile[1].in_features, 2)
     return model

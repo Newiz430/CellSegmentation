@@ -53,7 +53,8 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     # data loading
-    testset = LystoTestset("data/test.h5", num_of_imgs=20 if args.debug else 0)
+    testing_data_path = "./data"
+    testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=True)
 

@@ -36,11 +36,14 @@ parser.add_argument('-E', '--encoder', type=str, default='resnet50',
                          '\'efficientnet_b0\', \'efficientnet_b2\'}')
 parser.add_argument('-B', '--image_batch_size', type=int, default=48,
                     help='batch size of images (default: 48)')
-parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
-                    help='learning rate (default: 0.0005)')
+parser.add_argument('-l', '--lr', type=float, default=5e-4, metavar='LR',
+                    help='learning rate (default: 5e-4)')
+parser.add_argument('--weight_decay', type=float, default=1e-4,
+                    help='decay of weight (default: 1e-4)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
                     help='learning rate scheduler if necessary, '
                          '{\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)')
+parser.add_argument('-a', '--augment', action="store_true", help='apply data augmentation')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--test_every', default=1, type=int,
@@ -72,14 +75,14 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
-    with SummaryWriter() as writer:
+    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
         print("PT.I - image classifier training ...")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
-                # if device.type == 'cuda':
-                #     torch.cuda.manual_seed(epoch)
-                # else:
-                #     torch.manual_seed(epoch)
+                if device.type == 'cuda':
+                    torch.cuda.manual_seed(epoch)
+                else:
+                    torch.manual_seed(epoch)
 
                 trainset.setmode(5)
 
@@ -112,7 +115,7 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
                 save_model(epoch, model, optimizer, scheduler, output_path, prefix='cls_pt1')
 
             except KeyboardInterrupt:
-                save_model(epoch, model, optimizer, scheduler, output_path)
+                save_model(epoch, model, optimizer, scheduler, output_path, prefix='cls_pt1')
                 print("\nTraining interrupted at epoch {}. Model saved in \'{}\'.".format(epoch, output_path))
                 sys.exit(0)
 
@@ -140,16 +143,16 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
-    with SummaryWriter() as writer:
+    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
 
         print("PT.I - image regression training ...")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
 
-                # if device.type == 'cuda':
-                #     torch.cuda.manual_seed(epoch)
-                # else:
-                #     torch.manual_seed(epoch)
+                if device.type == 'cuda':
+                    torch.cuda.manual_seed(epoch)
+                else:
+                    torch.manual_seed(epoch)
 
                 trainset.setmode(5)
 
@@ -190,7 +193,7 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
                 save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
 
             except KeyboardInterrupt:
-                save_model(epoch, model, optimizer, scheduler, output_path)
+                save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
                 print("\nTraining interrupted at epoch {}. Model saved in \'{}\'.".format(epoch, output_path))
                 sys.exit(0)
 
@@ -229,7 +232,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
-    with SummaryWriter() as writer:
+    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
         alpha = 1
         beta = 1
 
@@ -300,7 +303,7 @@ def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
         'mode': 'image',
         'epoch': epoch,
         'state_dict': state_dict,
-        'encoder': model.encoder.encoder_name,
+        'encoder': model.encoder_name,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict() if scheduler is not None else None
     }
@@ -337,9 +340,12 @@ if __name__ == "__main__":
         os.mkdir(args.output)
 
     # data loading
+    training_data_path = "./data"
     kfold = None if args.test_every > args.epochs else 10
-    trainset = LystoDataset("data/training.h5", kfold=kfold, num_of_imgs=100 if args.debug else 0)
-    valset = LystoDataset("data/training.h5", train=False, kfold=kfold, num_of_imgs=100 if args.debug else 0)
+    trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), kfold=kfold, augment=args.augment,
+                            num_of_imgs=100 if args.debug else 0)
+    valset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, kfold=kfold,
+                          num_of_imgs=100 if args.debug else 0)
 
     collate_fn = default_collate
     # TODO: how can I split the training step for distributed parallel training?
@@ -393,8 +399,8 @@ if __name__ == "__main__":
     optimizer_params = {'params': model.parameters(),
                         'initial_lr': args.lr}
     optimizers = {
-        'SGD': optim.SGD([optimizer_params], lr=args.lr, momentum=0.9, weight_decay=1e-4),
-        'Adam': optim.Adam([optimizer_params], lr=args.lr, weight_decay=1e-4)
+        'SGD': optim.SGD([optimizer_params], lr=args.lr, momentum=0.9, weight_decay=args.weight_decay),
+        'Adam': optim.Adam([optimizer_params], lr=args.lr, weight_decay=args.weight_decay)
     }
     schedulers = {
         'OneCycleLR': OneCycleLR,  # note that last_epoch means last iteration number here
@@ -467,6 +473,7 @@ if __name__ == "__main__":
     #                                        last_epoch=last_epoch_for_scheduler,
     #                                        **scheduler_kwargs[args.scheduler]) \
     #     if args.scheduler is not None else None
+    #
     # train_reg(total_epochs=args.epochs,
     #           last_epoch=last_epoch,
     #           test_every=args.test_every,
@@ -477,4 +484,3 @@ if __name__ == "__main__":
     #           scheduler=scheduler,
     #           output_path=args.output
     #           )
-

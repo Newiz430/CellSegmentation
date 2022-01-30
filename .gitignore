@@ -6,6 +6,7 @@
 /runs/
 /soft/
 /.idea/
+/test_detect/
 *.pth
 *.ipynb
 .ipynb_checkpoints

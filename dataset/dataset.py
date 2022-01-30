@@ -65,17 +65,23 @@ class LystoDataset(Dataset):
         ]
         self.transform = [transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
+            # transforms.Normalize(
+            #     mean=[0.485, 0.456, 0.406],
+            #     std=[0.229, 0.224, 0.225]
+            # )
         ])] + [transforms.Compose([
             transforms.ToTensor(),
             augment,
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
+            # transforms.ColorJitter(
+            #     brightness=0.2,
+            #     contrast=0.2,
+            #     saturation=0.4,
+            #     hue=0.05,
+            # ),
+            # transforms.Normalize(
+            #     mean=[0.485, 0.456, 0.406],
+            #     std=[0.229, 0.224, 0.225]
+            # )
         ]) for augment in augment_transforms]
 
         def store_data(transidx=0):
