@@ -199,7 +199,7 @@ if __name__ == "__main__":
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")
-    training_data_path = config.get("data", "training_data_path")
+    training_data_path = config.get("data", "data_path")
 
     if not args.skip_draw:
         from dataset import LystoDataset

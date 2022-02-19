@@ -342,7 +342,7 @@ if __name__ == "__main__":
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")
-    training_data_path = config.get("data", "training_data_path")
+    training_data_path = config.get("data", "data_path")
 
     # data loading
     kfold = None if args.test_every > args.epochs else 10

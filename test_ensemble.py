@@ -1,4 +1,6 @@
 import os
+import glob
+import configparser
 import argparse
 import time
 import csv
@@ -17,6 +19,7 @@ now = int(time.time())
 
 parser = argparse.ArgumentParser(prog="test_count.py", description='Cell count evaluation')
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
+parser.add_argument('-e', '--epoch', type=int, help='how many epochs the models have been trained')
 parser.add_argument('-B', '--image_batch_size', type=int, default=64, help='batch size of images (default: 64)')
 parser.add_argument('-c', '--cls_limit', action='store_true',
                     help='whether or not limiting counts by classification results')
@@ -36,7 +39,7 @@ def test_ensemble(loader, models, epoch, cls_limit, output_path):
 
     outputs = []
     for i, m in enumerate(models):
-        print('Testing {}/{}...'.format(i, len(models)))
+        print('Testing {}/{}...'.format(i + 1, len(models)))
 
         testset.setmode("image")
         outputs.append(inference_image(loader, m, device, mode='test', cls_limit=cls_limit)[1])
@@ -55,8 +58,10 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    testing_data_path = config.get("data", "data_path")
     # data loading
-    testing_data_path = "./data"
     testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=True)
@@ -64,19 +69,17 @@ if __name__ == "__main__":
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
     models = []
-    epoch = None
-    for m in sorted(os.listdir(args.model)):
+    for m in glob.glob(os.path.join(args.model, '*_{}epochs.pth'.format(args.epoch))):
 
-        f = torch.load(os.path.join(args.model, m), map_location=device)
+        f = torch.load(m, map_location=device)
         model = nets[f['encoder']]
-        epoch = f['epoch']
         # load params of resnet encoder and image head only
         model.load_state_dict(
             OrderedDict({k: v for k, v in f['state_dict'].items()
-                     if k.startswith(models[-1].encoder_prefix + model.image_module_prefix)}),
+                     if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
             strict=False)
         model.setmode("image")
         model.to(device)
         models.append(model)
 
-    test_ensemble(test_loader, models, epoch, args.cls_limit, output_path=args.output)
+    test_ensemble(test_loader, models, args.epoch, args.cls_limit, output_path=args.output)

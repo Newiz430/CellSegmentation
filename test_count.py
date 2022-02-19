@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")
-    training_data_path = config.get("data", "training_data_path")
+    testing_data_path = config.get("data", "data_path")
 
     # data loading
     testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), num_of_imgs=20 if args.debug else 0)
