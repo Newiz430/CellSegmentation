@@ -1,6 +1,7 @@
 import warnings
 import os
 import sys
+import configparser
 import argparse
 import time
 from collections import OrderedDict
@@ -196,7 +197,9 @@ if __name__ == "__main__":
         last_epoch = 0
         last_epoch_for_scheduler = -1
 
-    training_data_path = "./data"
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    training_data_path = config.get("data", "training_data_path")
 
     if not args.skip_draw:
         from dataset import LystoDataset

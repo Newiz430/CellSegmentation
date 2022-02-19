@@ -1,6 +1,7 @@
 import warnings
 import os
 import sys
+import configparser
 import argparse
 import time
 import csv
@@ -339,8 +340,11 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    training_data_path = config.get("data", "training_data_path")
+
     # data loading
-    training_data_path = "./data"
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), kfold=kfold, augment=args.augment,
                             num_of_imgs=100 if args.debug else 0)
@@ -419,11 +423,12 @@ if __name__ == "__main__":
             'gamma': 0.9,
         },
         'CosineAnnealingWarmRestarts': {
-            'T_0': 5,
+            'T_0': 10,
         }
     }
 
-    optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
+    # optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
+    optimizer = optimizers['Adam']
     scheduler = schedulers[args.scheduler](optimizer,
                                            last_epoch=last_epoch_for_scheduler,
                                            **scheduler_kwargs[args.scheduler]) \
@@ -445,7 +450,6 @@ if __name__ == "__main__":
                   output_path=args.output
                   )
     else:
-
         train(total_epochs=args.epochs,
               last_epoch=last_epoch,
               test_every=args.test_every,

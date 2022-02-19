@@ -1,10 +1,10 @@
 import os
-import configparser
 import argparse
 import time
 import csv
 from collections import OrderedDict
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -28,19 +28,21 @@ parser.add_argument('--debug', action='store_true', help='use little data for de
 args = parser.parse_args()
 
 
-def test_count(loader, model, epoch, cls_limit, output_path):
+def test_ensemble(loader, models, epoch, cls_limit, output_path):
 
-    fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(
-        now, epoch)), 'w', newline="")
+    fconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(now, epoch)), 'w', newline="")
     w = csv.writer(fconv, delimiter=',')
     w.writerow(['id', 'count', 'organ'])
 
-    print('Start testing ...')
+    outputs = []
+    for i, m in enumerate(models):
+        print('Testing {}/{}...'.format(i, len(models)))
 
-    testset.setmode("image")
-    output = inference_image(loader, model, device, mode='test', cls_limit=cls_limit)[1]
-    # for i, y in enumerate(zip(*output), start=1):
-    #     w.writerow([i, y[1], testset.organs[i - 1], y[0]])
+        testset.setmode("image")
+        outputs.append(inference_image(loader, m, device, mode='test', cls_limit=cls_limit)[1])
+
+    # take average as the final result
+    output = np.asarray(outputs).mean(axis=0)
     for i, y in enumerate(output, start=1):
         w.writerow([i, y, testset.organs[i - 1]])
     fconv.close()
@@ -53,26 +55,28 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
-    config = configparser.ConfigParser()
-    config.read("config.ini", encoding="utf-8")
-    training_data_path = config.get("data", "training_data_path")
-
     # data loading
+    testing_data_path = "./data"
     testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
                              pin_memory=True)
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-    f = torch.load(args.model, map_location=device)
-    model = nets[f['encoder']]
-    epoch = f['epoch']
-    # load params of resnet encoder and image head only
-    model.load_state_dict(
-        OrderedDict({k: v for k, v in f['state_dict'].items()
-                     if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
-        strict=False)
-    model.setmode("image")
-    model.to(device)
+    models = []
+    epoch = None
+    for m in sorted(os.listdir(args.model)):
 
-    test_count(test_loader, model, epoch, args.cls_limit, output_path=args.output)
+        f = torch.load(os.path.join(args.model, m), map_location=device)
+        model = nets[f['encoder']]
+        epoch = f['epoch']
+        # load params of resnet encoder and image head only
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in f['state_dict'].items()
+                     if k.startswith(models[-1].encoder_prefix + model.image_module_prefix)}),
+            strict=False)
+        model.setmode("image")
+        model.to(device)
+        models.append(model)
+
+    test_ensemble(test_loader, models, epoch, args.cls_limit, output_path=args.output)

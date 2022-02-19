@@ -22,7 +22,8 @@ patch_size = np.array([299, 299])
 
 class LystoDataset(Dataset):
 
-    def __init__(self, filepath, tile_size=None, interval=None, train=True, augment=False, kfold=10, num_of_imgs=0):
+    def __init__(self, filepath=None, tile_size=None, interval=None, train=True, augment=False, kfold=10, num_of_imgs=0,
+                 _stacking_init=False):
         """
         :param filepath:    hdf5数据文件路径
         :param train:       训练集 / 验证集，默认为训练集
@@ -34,27 +35,30 @@ class LystoDataset(Dataset):
 
         super(LystoDataset, self).__init__()
 
-        if os.path.exists(filepath):
-            f = h5py.File(filepath, 'r')
-        else:
-            raise FileNotFoundError("Invalid data directory.")
+        if not _stacking_init:
+            if os.path.exists(filepath):
+                f = h5py.File(filepath, 'r')
+            else:
+                raise FileNotFoundError("Invalid data directory.")
 
-        if kfold is not None and kfold <= 0:
-            raise Exception("Invalid k-fold cross-validation argument.")
+            if kfold is not None and kfold <= 0:
+                raise Exception("Invalid k-fold cross-validation argument.")
+            else:
+                self.kfold = kfold
 
         self.train = train
-        self.kfold = kfold
         # self.visualize = False
         self.organs = []  # 全切片来源，list ( 20000 )
         self.images = []  # list ( 20000 * 299 * 299 * 3 )
         self.labels = []  # 图像中的阳性细胞数目，list ( 20000 )
         self.cls_labels = []  # 按数目把图像分为 7 类，存为类别标签
-        self.transformIDX = []  # 数据增强的类别，list (  )
+        self.transformIDX = []  # 数据增强的类别，list ( 20000 )
         self.tileIDX = []  # 每个 tile 对应的图像编号，list ( 20000 * n )
         self.tiles_grid = []  # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
+        self.augment = augment
         augment_transforms = [
             transforms.RandomHorizontalFlip(p=1),
             transforms.RandomVerticalFlip(p=1),
@@ -65,66 +69,67 @@ class LystoDataset(Dataset):
         ]
         self.transform = [transforms.Compose([
             transforms.ToTensor(),
-            # transforms.Normalize(
-            #     mean=[0.485, 0.456, 0.406],
-            #     std=[0.229, 0.224, 0.225]
-            # )
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
         ])] + [transforms.Compose([
             transforms.ToTensor(),
-            augment,
+            aug,
             # transforms.ColorJitter(
             #     brightness=0.2,
             #     contrast=0.2,
             #     saturation=0.4,
             #     hue=0.05,
             # ),
-            # transforms.Normalize(
-            #     mean=[0.485, 0.456, 0.406],
-            #     std=[0.229, 0.224, 0.225]
-            # )
-        ]) for augment in augment_transforms]
-
-        def store_data(transidx=0):
-
-            nonlocal organ, img, label, tileIDX, augment_transforms
-            assert transidx <= len(augment_transforms), "Not enough transformations for image augmentation. "
-
-            self.organs.append(organ)
-            self.images.append(img)
-            self.labels.append(label)
-            cls_label = categorize(label)
-            self.cls_labels.append(cls_label)
-            self.transformIDX.append(transidx)
-
-            if self.interval is not None and self.tile_size is not None:
-                t = get_tiles(img, self.interval, self.tile_size)
-                self.tiles_grid.extend(t)  # 获取 tiles
-                self.tileIDX.extend([tileIDX] * len(t))  # 每个 tile 对应的 image 标签
-
-            return cls_label
-
-        tileIDX = -1
-        for i, (organ, img, label) in enumerate(tqdm(zip(f['organ'], f['x'], f['y']), desc="loading images")):
-
-            # 调试用代码
-            if num_of_imgs != 0 and i == num_of_imgs:
-                break
-
-            if self.kfold is not None:
-                if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
-                    continue
-
-            tileIDX += 1
-
-            cls_label = store_data()
-            if self.train and augment and cls_label >= 3:
-                for i in range(1, 4):
-                    store_data(i)
-
-        assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ]) for aug in augment_transforms]
 
         self.image_size = patch_size
         self.mode = None
+
+        if not _stacking_init:
+            def store_data(transidx=0):
+
+                nonlocal organ, img, label, tileIDX, augment_transforms
+                assert transidx <= len(augment_transforms), "Not enough transformations for image augmentation. "
+
+                self.organs.append(organ)
+                self.images.append(img)
+                self.labels.append(label)
+                cls_label = categorize(label)
+                self.cls_labels.append(cls_label)
+                self.transformIDX.append(transidx)
+
+                if self.interval is not None and self.tile_size is not None:
+                    t = get_tiles(img, self.interval, self.tile_size)
+                    self.tiles_grid.extend(t)  # 获取 tiles
+                    self.tileIDX.extend([tileIDX] * len(t))  # 每个 tile 对应的 image 标签
+
+                return cls_label
+
+            tileIDX = -1
+            for i, (organ, img, label) in enumerate(tqdm(zip(f['organ'], f['x'], f['y']), desc="loading images")):
+
+                # 调试用代码
+                if num_of_imgs != 0 and i == num_of_imgs:
+                    break
+
+                if self.kfold is not None:
+                    if (self.train and (i + 1) % self.kfold == 0) or (not self.train and (i + 1) % self.kfold != 0):
+                        continue
+
+                tileIDX += 1
+
+                cls_label = store_data()
+                if self.train and self.augment and cls_label >= 3:
+                    for i in range(1, 4):
+                        store_data(i)
+
+            assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 
     def setmode(self, mode):
         """
@@ -266,6 +271,68 @@ class LystoDataset(Dataset):
             return len(self.train_data)
         else:
             return len(self.labels)
+
+
+class EnsembleSet:
+
+    def __init__(self, filepath=None, augment=False, k: int = 10):
+
+        data = LystoDataset(filepath, kfold=None, augment=augment)
+        self.k = k
+        images = np.array_split(np.asarray(data.images), self.k)
+        labels = np.array_split(np.asarray(data.labels), self.k)
+        organs = np.array_split(np.asarray(data.organs), self.k)
+        cls_labels = np.array_split(np.asarray(data.cls_labels), self.k)
+        transformations = np.array_split(np.asarray(data.transformIDX), self.k)
+
+        self.training_sets = [LystoDataset(kfold=None, _stacking_init=True)] * self.k
+        self.validating_sets = [LystoDataset(kfold=None, _stacking_init=True)] * self.k
+
+        for i in range(self.k):
+            for j in range(self.k):
+
+                if j == 0:
+                    self.training_sets[i].images = list(np.concatenate(images[1:]))
+                    self.training_sets[i].labels = list(np.concatenate(labels[1:]))
+                    self.training_sets[i].organs = list(np.concatenate(organs[1:]))
+                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[1:]))
+                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[1:]))
+                elif j == self.k - 1:
+                    self.training_sets[i].images = list(np.concatenate(images[:-1]))
+                    self.training_sets[i].labels = list(np.concatenate(labels[:-1]))
+                    self.training_sets[i].organs = list(np.concatenate(organs[:-1]))
+                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:-1]))
+                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[:-1]))
+                else:
+                    self.training_sets[i].images = list(np.concatenate(images[:j])) + \
+                                                   list(np.concatenate(images[j + 1:]))
+                    self.training_sets[i].labels = list(np.concatenate(labels[:j])) + \
+                                                   list(np.concatenate(labels[j + 1:]))
+                    self.training_sets[i].organs = list(np.concatenate(organs[:j])) + \
+                                                   list(np.concatenate(organs[j + 1:]))
+                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:j])) + \
+                                                       list(np.concatenate(cls_labels[j + 1:]))
+                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[:j])) + \
+                                                         list(np.concatenate(transformations[j + 1:]))
+                self.validating_sets[i].images = images[j]
+                self.validating_sets[i].labels = labels[j]
+                self.validating_sets[i].organs = organs[j]
+                self.validating_sets[i].cls_labels = cls_labels[j]
+                self.validating_sets[i].transformIDX = transformations[j]
+
+    def setmode(self, train, mode):
+        if train:
+            for i in range(self.k):
+                self.training_sets[i].setmode(mode)
+        else:
+            for i in range(self.k):
+                self.validating_sets[i].setmode(mode)
+
+    def get_loader(self, train, idx, **kwargs):
+        if train:
+            return DataLoader(self.training_sets[idx], shuffle=True, pin_memory=True, **kwargs)
+        else:
+            return DataLoader(self.validating_sets[idx], shuffle=False, pin_memory=True, **kwargs)
 
 
 class LystoTestset(Dataset):

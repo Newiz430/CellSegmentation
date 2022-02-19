@@ -1,6 +1,7 @@
 import warnings
 import os
 import sys
+import configparser
 import argparse
 import time
 from collections import OrderedDict
@@ -193,8 +194,11 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.mkdir(args.output)
 
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    training_data_path = config.get("data", "training_data_path")
+
     # data loading
-    training_data_path = "./data"
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), tile_size=args.tile_size, interval=args.interval, kfold=kfold,
                             num_of_imgs=100 if args.debug else 0)
