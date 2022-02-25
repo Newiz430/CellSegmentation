@@ -1,4 +1,5 @@
 import collections
+import copy
 import os
 import sys
 from tqdm import tqdm
@@ -48,6 +49,7 @@ class LystoDataset(Dataset):
 
         self.train = train
         # self.visualize = False
+        self.ids = []
         self.organs = []  # 全切片来源，list ( 20000 )
         self.images = []  # list ( 20000 * 299 * 299 * 3 )
         self.labels = []  # 图像中的阳性细胞数目，list ( 20000 )
@@ -94,9 +96,10 @@ class LystoDataset(Dataset):
         if not _stacking_init:
             def store_data(transidx=0):
 
-                nonlocal organ, img, label, tileIDX, augment_transforms
+                nonlocal i, organ, img, label, tileIDX, augment_transforms
                 assert transidx <= len(augment_transforms), "Not enough transformations for image augmentation. "
 
+                self.ids.append(i)
                 self.organs.append(organ)
                 self.images.append(img)
                 self.labels.append(label)
@@ -126,8 +129,8 @@ class LystoDataset(Dataset):
 
                 cls_label = store_data()
                 if self.train and self.augment and cls_label >= 3:
-                    for i in range(1, 4):
-                        store_data(i)
+                    for j in range(1, 4):
+                        store_data(j)
 
             assert len(self.labels) == len(self.images), "Mismatched number of labels and images."
 
@@ -277,62 +280,95 @@ class EnsembleSet:
 
     def __init__(self, filepath=None, augment=False, k: int = 10):
 
-        data = LystoDataset(filepath, kfold=None, augment=augment)
-        self.k = k
-        images = np.array_split(np.asarray(data.images), self.k)
-        labels = np.array_split(np.asarray(data.labels), self.k)
-        organs = np.array_split(np.asarray(data.organs), self.k)
-        cls_labels = np.array_split(np.asarray(data.cls_labels), self.k)
-        transformations = np.array_split(np.asarray(data.transformIDX), self.k)
+        self.data = LystoDataset(filepath, kfold=None, augment=augment)
+        self.training_set_frame = LystoDataset(kfold=None, _stacking_init=True)
+        self.validating_set_frame = LystoDataset(kfold=None, _stacking_init=True)
 
-        self.training_sets = [LystoDataset(kfold=None, _stacking_init=True)] * self.k
-        self.validating_sets = [LystoDataset(kfold=None, _stacking_init=True)] * self.k
+        self.k = k
+        self.training_idxes = []
+        self.validating_idxes = []
+        self.training_set = None
+        self.validating_set = None
+
+        size, extra = divmod(len(self.data.labels), self.k)
+        split_size = np.full(self.k, size)
+        split_size[:extra] += 1
+        for i in range(1, len(split_size)):
+            split_size[i] += split_size[i - 1]
+        split_size = [0] + list(split_size)
 
         for i in range(self.k):
-            for j in range(self.k):
+            self.training_idxes.append([idx for idx in range(split_size[i])] +
+                                       [idx for idx in range(split_size[i + 1], split_size[-1])])
+            self.validating_idxes.append([idx for idx in range(split_size[i], split_size[i + 1])])
 
-                if j == 0:
-                    self.training_sets[i].images = list(np.concatenate(images[1:]))
-                    self.training_sets[i].labels = list(np.concatenate(labels[1:]))
-                    self.training_sets[i].organs = list(np.concatenate(organs[1:]))
-                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[1:]))
-                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[1:]))
-                elif j == self.k - 1:
-                    self.training_sets[i].images = list(np.concatenate(images[:-1]))
-                    self.training_sets[i].labels = list(np.concatenate(labels[:-1]))
-                    self.training_sets[i].organs = list(np.concatenate(organs[:-1]))
-                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:-1]))
-                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[:-1]))
-                else:
-                    self.training_sets[i].images = list(np.concatenate(images[:j])) + \
-                                                   list(np.concatenate(images[j + 1:]))
-                    self.training_sets[i].labels = list(np.concatenate(labels[:j])) + \
-                                                   list(np.concatenate(labels[j + 1:]))
-                    self.training_sets[i].organs = list(np.concatenate(organs[:j])) + \
-                                                   list(np.concatenate(organs[j + 1:]))
-                    self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:j])) + \
-                                                       list(np.concatenate(cls_labels[j + 1:]))
-                    self.training_sets[i].transformIDX = list(np.concatenate(transformations[:j])) + \
-                                                         list(np.concatenate(transformations[j + 1:]))
-                self.validating_sets[i].images = images[j]
-                self.validating_sets[i].labels = labels[j]
-                self.validating_sets[i].organs = organs[j]
-                self.validating_sets[i].cls_labels = cls_labels[j]
-                self.validating_sets[i].transformIDX = transformations[j]
-
-    def setmode(self, train, mode):
-        if train:
-            for i in range(self.k):
-                self.training_sets[i].setmode(mode)
-        else:
-            for i in range(self.k):
-                self.validating_sets[i].setmode(mode)
+        # images = np.array_split(np.asarray(data.images), self.k)
+        # labels = np.array_split(np.asarray(data.labels), self.k)
+        # organs = np.array_split(np.asarray(data.organs), self.k)
+        # cls_labels = np.array_split(np.asarray(data.cls_labels), self.k)
+        # transformations = np.array_split(np.asarray(data.transformIDX), self.k)
+        #
+        # self.training_sets = [LystoDataset(kfold=None, _stacking_init=True) for _ in range(self.k)]
+        # self.validating_sets = [LystoDataset(kfold=None, _stacking_init=True) for _ in range(self.k)]
+        #
+        # for i in range(self.k):
+        #     for j in range(self.k):
+        #
+        #         if j == 0:
+        #             self.training_sets[i].images = list(np.concatenate(images[1:]))
+        #             self.training_sets[i].labels = list(np.concatenate(labels[1:]))
+        #             self.training_sets[i].organs = list(np.concatenate(organs[1:]))
+        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[1:]))
+        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[1:]))
+        #         elif j == self.k - 1:
+        #             self.training_sets[i].images = list(np.concatenate(images[:-1]))
+        #             self.training_sets[i].labels = list(np.concatenate(labels[:-1]))
+        #             self.training_sets[i].organs = list(np.concatenate(organs[:-1]))
+        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:-1]))
+        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[:-1]))
+        #         else:
+        #             self.training_sets[i].images = list(np.concatenate(images[:j])) + \
+        #                                            list(np.concatenate(images[j + 1:]))
+        #             self.training_sets[i].labels = list(np.concatenate(labels[:j])) + \
+        #                                            list(np.concatenate(labels[j + 1:]))
+        #             self.training_sets[i].organs = list(np.concatenate(organs[:j])) + \
+        #                                            list(np.concatenate(organs[j + 1:]))
+        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:j])) + \
+        #                                                list(np.concatenate(cls_labels[j + 1:]))
+        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[:j])) + \
+        #                                                  list(np.concatenate(transformations[j + 1:]))
+        #         self.validating_sets[i].images = images[j]
+        #         self.validating_sets[i].labels = labels[j]
+        #         self.validating_sets[i].organs = organs[j]
+        #         self.validating_sets[i].cls_labels = cls_labels[j]
+        #         self.validating_sets[i].transformIDX = transformations[j]
 
     def get_loader(self, train, idx, **kwargs):
         if train:
-            return DataLoader(self.training_sets[idx], shuffle=True, pin_memory=True, **kwargs)
+            self.training_set = copy.deepcopy(self.training_set_frame)
+            for i in self.training_idxes[idx]:
+                self.training_set.images.append(self.data.images[i])
+                self.training_set.labels.append(self.data.labels[i])
+                self.training_set.organs.append(self.data.organs[i])
+                self.training_set.cls_labels.append(self.data.cls_labels[i])
+                self.training_set.transformIDX.append(self.data.transformIDX[i])
+            return DataLoader(self.training_set, shuffle=True, pin_memory=True, **kwargs)
+
         else:
-            return DataLoader(self.validating_sets[idx], shuffle=False, pin_memory=True, **kwargs)
+            self.validating_set = copy.deepcopy(self.validating_set_frame)
+            for i in self.validating_idxes[idx]:
+                self.validating_set.images.append(self.data.images[i])
+                self.validating_set.labels.append(self.data.labels[i])
+                self.validating_set.organs.append(self.data.organs[i])
+                self.validating_set.cls_labels.append(self.data.cls_labels[i])
+                self.validating_set.transformIDX.append(self.data.transformIDX[i])
+            return DataLoader(self.validating_set, shuffle=False, pin_memory=True, **kwargs)
+
+    def setmode(self, train, mode):
+        if train:
+            self.training_set_frame.setmode(mode)
+        else:
+            self.validating_set_frame.setmode(mode)
 
 
 class LystoTestset(Dataset):

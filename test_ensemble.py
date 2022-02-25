@@ -4,6 +4,7 @@ import configparser
 import argparse
 import time
 import csv
+from copy import deepcopy
 from collections import OrderedDict
 
 import numpy as np
@@ -45,7 +46,7 @@ def test_ensemble(loader, models, epoch, cls_limit, output_path):
         outputs.append(inference_image(loader, m, device, mode='test', cls_limit=cls_limit)[1])
 
     # take average as the final result
-    output = np.asarray(outputs).mean(axis=0)
+    output = np.asarray(outputs).mean(axis=0).round().astype(int)
     for i, y in enumerate(output, start=1):
         w.writerow([i, y, testset.organs[i - 1]])
     fconv.close()
@@ -72,11 +73,11 @@ if __name__ == "__main__":
     for m in glob.glob(os.path.join(args.model, '*_{}epochs.pth'.format(args.epoch))):
 
         f = torch.load(m, map_location=device)
-        model = nets[f['encoder']]
+        model = deepcopy(nets[f['encoder']])
         # load params of resnet encoder and image head only
         model.load_state_dict(
-            OrderedDict({k: v for k, v in f['state_dict'].items()
-                     if k.startswith(model.encoder_prefix + model.image_module_prefix)}),
+            OrderedDict({k: v for k, v in f['state_dict'].items() if
+                         k.startswith(model.encoder_prefix + model.image_module_prefix)}),
             strict=False)
         model.setmode("image")
         model.to(device)

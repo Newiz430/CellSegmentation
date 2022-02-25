@@ -5,6 +5,7 @@ import configparser
 import argparse
 import time
 import csv
+from copy import deepcopy
 from collections import OrderedDict
 
 import numpy as np
@@ -112,12 +113,12 @@ def train_ensemble(total_epochs, idx, last_epoch, test_every, model, device, cri
                     w = csv.writer(regconv, delimiter=',')
                     w.writerow(['id', 'organ', 'label', 'count', 'category label', 'loss'])
                     for i, count in enumerate(np.round(counts).astype(int)):
-                        w.writerow([i + 1, data.validating_sets[idx].organs[i], data.validating_sets[idx].labels[i],
-                                    count, data.validating_sets[idx].cls_labels[i],
-                                    np.abs(count - data.validating_sets[idx].labels[i])])
+                        w.writerow([i + 1, data.validating_set.organs[i], data.validating_set.labels[i],
+                                    count, data.validating_set.cls_labels[i],
+                                    np.abs(count - data.validating_set.labels[i])])
                     regconv.close()
 
-                    metrics_i = evaluate_image(data.validating_sets[idx], [], counts)
+                    metrics_i = evaluate_image(data.validating_set, [], counts)
                     print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
                     fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
                     fconv.write('{},{},{}\n'.format(epoch, *metrics_i[1:]))
@@ -198,7 +199,7 @@ if __name__ == "__main__":
     # model setup
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-    models = [nets[args.encoder]] * args.kfold
+    models = [deepcopy(nets[args.encoder]) for _ in range(args.kfold)]
 
     crit_cls = nn.CrossEntropyLoss()
     crit_reg = nn.MSELoss()
