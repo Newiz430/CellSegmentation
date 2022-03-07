@@ -78,7 +78,7 @@ def test_seg(testset, threshold, soft=False, output_path=None):
                 if soft:
                     soft_dir = os.path.join(output_path, 'soft')
                     if not os.path.exists(soft_dir):
-                        os.mkdir(soft_dir)
+                        os.makedirs(soft_dir)
                     io.imsave(os.path.join(soft_dir, '{:05}.png'.format(patch_id + 1)), np.uint8(255 * mask * classes))
                     mask = cv2.applyColorMap(255 - np.uint8(255 * mask * classes), cv2.COLORMAP_JET)
 
@@ -100,7 +100,7 @@ def cell_detect(testset, resume=False, output_image=True, output_path=None, meth
     detect_path = os.path.join(output_path, 'detect')
     tmp_path = os.path.join(detect_path, 'tmp.csv')
     if not os.path.exists(detect_path):
-        os.mkdir(detect_path)
+        os.makedirs(detect_path)
     if resume:
         fpath = glob.glob(os.path.join(detect_path, '*-location.csv'))[-1]
         f = open(fpath, 'a', newline="")
@@ -232,7 +232,7 @@ def crop_wsi(data_path, max_size=5e+7):
 
     backup_path = os.path.join(data_path, 'backup')
     if not os.path.exists(backup_path):
-        os.mkdir(backup_path)
+        os.makedirs(backup_path)
 
     for file in tqdm(sorted(os.listdir(data_path)), desc="WSI size checking & cropping"):
         if os.path.getsize(os.path.join(data_path, file)) > max_size:
@@ -329,7 +329,7 @@ if __name__ == "__main__":
                       else "Smoothing method: {}".format(args.smooth_method),
                   args.output))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     print("Cropping large WSIs to fit memory... ")
     crop_wsi(args.data_path)

@@ -154,7 +154,7 @@ if __name__ == "__main__":
         print("Tile batch size: {} | Tile size: {} | Stride: {} | Image batch size: {}".format(
             args.tile_batch_size, args.tile_size, args.interval, args.image_batch_size))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     # model setup
     def to_device(model, device):

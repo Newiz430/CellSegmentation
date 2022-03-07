@@ -182,7 +182,7 @@ if __name__ == "__main__":
           )
     print("Image batch size: {}".format(args.image_batch_size))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")

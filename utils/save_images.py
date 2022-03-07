@@ -20,7 +20,7 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
     """
 
     if not os.path.exists(output_path):
-        os.mkdir(output_path)
+        os.makedirs(output_path)
 
     bar = tqdm(dataset.images)
     for i, img in enumerate(bar):
@@ -128,7 +128,7 @@ def save_images_with_masks(images, masks, threshold, output_path, soft=False):
         if soft:
             soft_dir = os.path.join(output_path, 'soft')
             if not os.path.exists(soft_dir):
-                os.mkdir(soft_dir)
+                os.makedirs(soft_dir)
             io.imsave(os.path.join(soft_dir, '{:05}.png'.format(i + 1)), np.uint8(255 * masks[i] * classes))
             mask = cv2.applyColorMap(255 - np.uint8(255 * masks[i] * classes), cv2.COLORMAP_JET)
             images[i] = cv2.addWeighted(images[i], 0.5, mask, 0.5, 0)

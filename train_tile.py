@@ -192,7 +192,7 @@ if __name__ == "__main__":
     print("Tile batch size: {} | Tile size: {} | Stride: {} | Negative top-k: {}"
           .format(args.tile_batch_size, args.tile_size, args.interval, args.topk_neg))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")
@@ -214,7 +214,6 @@ if __name__ == "__main__":
     val_loader = DataLoader(valset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,
                             sampler=val_sampler, pin_memory=True)
 
-
     # model setup
     def to_device(model, device):
         if dist.is_nccl_available() and args.distributed:
@@ -228,7 +227,6 @@ if __name__ == "__main__":
         else:
             model.to(device)
         return model
-
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)

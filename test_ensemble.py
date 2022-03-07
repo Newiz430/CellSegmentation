@@ -57,7 +57,7 @@ if __name__ == "__main__":
     print("Device: {} | Model: {} | Image batch size: {} | Output directory: {}"
           .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.image_batch_size, args.output))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")

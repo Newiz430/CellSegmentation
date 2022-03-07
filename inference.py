@@ -43,13 +43,15 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
     print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 
-def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False):
+def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False,
+                    return_id=False):
     """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
 
     model.eval()
 
     # probs = torch.tensor(())
     # nums = torch.tensor(())
+    ids = np.array(())
     categories = np.array(())
     counts = np.array(())
     with torch.no_grad():
@@ -59,6 +61,9 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
         for i, data in enumerate(image_bar):
             if mode == 'train':
                 data = data[0]
+            else:
+                batch_ids, data = data
+                ids = np.concatenate((ids, batch_ids))
             output = model(data.to(device))
             output_cls = F.softmax(output[0], dim=1)
             output_cls = output_cls.detach().clone().cpu()
@@ -84,8 +89,11 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
             categories = np.concatenate((categories, cat_labels))
             counts = np.concatenate((counts, output_reg))
 
-    # return probs.numpy(), nums.numpy()
-    return categories, counts
+    if return_id:
+        return ids, categories, counts
+    else:
+        # return probs.numpy(), nums.numpy()
+        return categories, counts
 
 
 def inference_image_cls(loader, model, device, epoch=None, total_epochs=None, mode='train'):

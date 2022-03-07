@@ -117,7 +117,7 @@ if __name__ == "__main__":
           .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.tile_batch_size, args.tile_size,
                   args.interval, args.threshold, args.output))
     if not os.path.exists(args.output):
-        os.mkdir(args.output)
+        os.makedirs(args.output)
 
     # data loading
     testing_data_path = "./data"
