@@ -29,22 +29,23 @@ now = int(time.time())
 
 # Training settings
 parser = argparse.ArgumentParser(prog="train_image.py", description='pt.1: image assessment training.')
-parser.add_argument('-e', '--epochs', type=int, default=30,
-                    help='total number of epochs to train (default: 30)')
+parser.add_argument('-e', '--epochs', type=int, default=50,
+                    help='total number of epochs to train (default: 50)')
 parser.add_argument('--reg_only', action="store_true", help='only enable image regression head')
 parser.add_argument('-H', '--hard_threshold', type=int, default=None,
                     help='Dynamically increase ratio of hard data by resampling between training epochs. '
-                         'Hard data threshold defined by counting error (no dynamic training as default)')
+                         'Hard data threshold defined by categorizing error / counting error (--reg_only). '
+                         '(no dynamic training as default)')
 parser.add_argument('-O', '--organ', type=str, default=None,
                     help='specify the category of training data {\'colon\', \'breast\', \'prostate\'} '
                          '(train all data as default)')
 parser.add_argument('-E', '--encoder', type=str, default='resnet50',
                     help='structure of the shared encoder, {\'resnet18\', \'resnet34\', \'resnet50\' (default), '
-                         '\'efficientnet_b0\', \'efficientnet_b2\'}')
+                         '\'efficientnet_b0\', \'efficientnet_b2\', \'resnext50\', \'resnext101\'}')
 parser.add_argument('-B', '--image_batch_size', type=int, default=48,
-                    help='batch size of images (default: 48)')
+                    help='batch size of images (default: 48, 32 recommended for EfficientNet)')
 parser.add_argument('-l', '--lr', type=float, default=8e-5, metavar='LR',
-                    help='learning rate (default: 8e-5)')
+                    help='learning rate (8e-5 recommended for EfficientNet)')
 parser.add_argument('--weight_decay', type=float, default=1e-4,
                     help='decay of weight (default: 1e-4)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
@@ -131,85 +132,7 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
 
 
 def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, optimizer, scheduler,
-              output_path):
-    from train import train_image_reg
-    from inference import inference_image_reg
-
-    # open output file
-    fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
-    fconv.write('epoch,image_reg_loss\n')
-    fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-image-training.csv
-    if test_every <= args.epochs:
-        fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
-        fconv.write('epoch,mse,qwk\n')
-        fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
-
-    print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
-
-    validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
-    start = int(time.time())
-    with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
-
-        print("PT.I - image regression training ...")
-        for epoch in range(1 + last_epoch, total_epochs + 1):
-            try:
-
-                if device.type == 'cuda':
-                    torch.cuda.manual_seed(epoch)
-                else:
-                    torch.manual_seed(epoch)
-
-                trainset.setmode(5)
-
-                loss = train_image_reg(train_loader, epoch, total_epochs, model, device, crit_reg, optimizer, scheduler)
-
-                print("image reg loss: {:.4f}".format(loss))
-                fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'a')
-                fconv.write('{},{}\n'.format(epoch, loss))
-                fconv.close()
-
-                writer.add_scalar("image reg loss", loss, epoch)
-
-                # Validating step
-                if validate(epoch, test_every):
-                    print('Validating ...')
-
-                    # image validating
-                    valset.setmode(4)
-                    counts = inference_image_reg(val_loader, model, device, epoch, total_epochs)
-
-                    regconv = open(os.path.join(output_path, '{}-count-e{}.csv'.format(now, epoch)),
-                                   'w', newline="")
-                    w = csv.writer(regconv, delimiter=',')
-                    w.writerow(['id', 'organ', 'label', 'count', 'category label', 'loss'])
-                    for i, count in enumerate(np.round(counts).astype(int)):
-                        w.writerow([i + 1, valset.organs[i], valset.labels[i], count, valset.cls_labels[i],
-                                    np.abs(count - valset.labels[i])])
-                    regconv.close()
-
-                    metrics_i = evaluate_image(valset, [], counts)
-                    print('image categories mAP: {} | MSE: {} | QWK: {}\n'.format(*metrics_i))
-                    fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'a')
-                    fconv.write('{},{},{}\n'.format(epoch, *metrics_i[1:]))
-                    fconv.close()
-
-                    add_scalar_metrics(writer, epoch, metrics_i)
-
-                save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
-
-            except KeyboardInterrupt:
-                save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
-                print("\nTraining interrupted at epoch {}. Model saved in \'{}\'.".format(epoch, output_path))
-                sys.exit(0)
-
-    end = int(time.time())
-    print("\nTrained for {} epochs. Model saved in \'{}\'. Runtime: {}s".format(total_epochs, output_path, end - start))
-
-
-def train_reg_dynamic(total_epochs, last_epoch, test_every, model, device, thresh, crit_reg, optimizer, scheduler,
-                      output_path):
+              output_path, *, thresh=None):
     from train import train_image_reg
     from inference import inference_image_reg
 
@@ -226,10 +149,11 @@ def train_reg_dynamic(total_epochs, last_epoch, test_every, model, device, thres
         fconv.close()
     # 验证结果保存在 output_path/<timestamp>-image-validation.csv
 
-    scoringset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=valset.organ,
-                              kfold=None)
-    scoring_loader = DataLoader(scoringset, batch_size=val_loader.batch_size, shuffle=False,
-                                num_workers=val_loader.num_workers, pin_memory=True)
+    if thresh is not None:
+        scoringset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=trainset.organ,
+                                  kfold=None)
+        scoring_loader = DataLoader(scoringset, batch_size=train_loader.batch_size, shuffle=False,
+                                    num_workers=train_loader.num_workers, pin_memory=True)
 
     print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
@@ -282,28 +206,29 @@ def train_reg_dynamic(total_epochs, last_epoch, test_every, model, device, thres
 
                     add_scalar_metrics(writer, epoch, metrics_i)
 
-                print('Reconstructing training data ...')
-                scoringset.setmode(4)
-                counts = inference_image_reg(scoring_loader, model, device, epoch, total_epochs)
-                hard_indices = []
+                if thresh is not None:
+                    print('Reconstructing training data ...')
+                    scoringset.setmode(4)
+                    counts = inference_image_reg(scoring_loader, model, device, epoch, total_epochs)
+                    hard_indices = []
 
-                for i in range(len(counts)):
-                    if abs(counts[i] - scoringset.labels[i]) >= thresh:
-                        hard_indices.append(i)
+                    for i in range(len(counts)):
+                        if abs(counts[i] - scoringset.labels[i]) >= thresh:
+                            hard_indices.append(i)
 
-                trainset.random_delete(len(hard_indices))
-                for i in range(len(hard_indices)):
-                    trainset.add_data(scoringset.organs[i], scoringset.images[i], scoringset.labels[i])
-                train_loader = DataLoader(trainset, batch_size=train_loader.batch_size, shuffle=True,
-                                          num_workers=train_loader.num_workers,
-                                          pin_memory=True, collate_fn=collate_fn)
+                    trainset.random_delete(len(hard_indices))
+                    for i in range(len(hard_indices)):
+                        trainset.add_data(scoringset.organs[i], scoringset.images[i], scoringset.labels[i])
+                    train_loader = DataLoader(trainset, batch_size=train_loader.batch_size, shuffle=True,
+                                              num_workers=train_loader.num_workers,
+                                              pin_memory=True, collate_fn=collate_fn)
 
-                print('Done. {0} removed & {0} added as hard data.'.format(len(hard_indices)))
-                for hi in hard_indices:
-                    print('id: {}\tpred: {}\tgt: {}\tclass: {}'.format(hi,
-                                                                       np.round(counts[hi]).astype(int),
-                                                                       scoringset.labels[hi],
-                                                                       scoringset.cls_labels[hi]))
+                    print('Done. {0} removed & {0} added as hard data.'.format(len(hard_indices)))
+                    for hi in hard_indices:
+                        print('id: {}\tpred: {}\tgt: {}\tclass: {}'.format(hi,
+                                                                           np.round(counts[hi]).astype(int),
+                                                                           scoringset.labels[hi],
+                                                                           scoringset.cls_labels[hi]))
 
                 save_model(epoch, model, optimizer, scheduler, output_path, prefix='reg_pt1')
 
@@ -317,7 +242,7 @@ def train_reg_dynamic(total_epochs, last_epoch, test_every, model, device, thres
 
 
 def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_reg, optimizer, scheduler,
-          output_path):
+          output_path, *, thresh=None):
     """pt.1: image assessment training.
 
     :param total_epochs:    迭代总次数
@@ -332,6 +257,8 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
     :param output_path:     保存模型文件和训练数据结果的目录
     """
 
+    global train_loader
+
     # open output file
     fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_cls_loss,image_reg_loss,image_loss,image_seg_loss\n')
@@ -342,6 +269,12 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
         fconv.write('epoch,image_map,mse,qwk\n')
         fconv.close()
     # 验证结果保存在 output_path/<timestamp>-image-validation.csv
+
+    if thresh is not None:
+        scoringset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=trainset.organ,
+                                  kfold=None)
+        scoring_loader = DataLoader(scoringset, batch_size=train_loader.batch_size, shuffle=False,
+                                    num_workers=train_loader.num_workers, pin_memory=True)
 
     print('Training ...' if not args.resume else 'Resuming from the checkpoint (epoch {})...'.format(last_epoch))
 
@@ -354,10 +287,10 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
         print("PT.I - image assessment training ...")
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
-                # if device.type == 'cuda':
-                #     torch.cuda.manual_seed(epoch)
-                # else:
-                #     torch.manual_seed(epoch)
+                if device.type == 'cuda':
+                    torch.cuda.manual_seed(epoch)
+                else:
+                    torch.manual_seed(epoch)
 
                 trainset.setmode(5)
 
@@ -396,6 +329,34 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
                     fconv.close()
 
                     add_scalar_metrics(writer, epoch, metrics_i)
+
+                if thresh is not None:
+                    print('Reconstructing training data ...')
+                    scoringset.setmode(4)
+                    categories, counts = inference_image(scoring_loader, model, device, epoch, total_epochs)
+                    hard_indices = []
+
+                    # for i in range(len(categories)):
+                    #    if abs(categories[i] - scoringset.cls_labels[i]) >= thresh:
+                    #        hard_indices.append(i)
+                    for i in range(len(counts)):
+                        if abs(counts[i] - scoringset.labels[i]) >= thresh:
+                            hard_indices.append(i)
+
+                    trainset.random_delete(len(hard_indices))
+                    for i in range(len(hard_indices)):
+                        trainset.add_data(scoringset.organs[i], scoringset.images[i], scoringset.labels[i])
+                    train_loader = DataLoader(trainset, batch_size=train_loader.batch_size, shuffle=True,
+                                              num_workers=train_loader.num_workers,
+                                              pin_memory=True, collate_fn=collate_fn)
+
+                    print('Done. {0} removed & {0} added as hard data.'.format(len(hard_indices)))
+                    for hi in hard_indices:
+                        print('id: {}\tpred: {}/{}\tgt: {}/{}'.format(hi,
+                                                                           np.round(categories[hi]).astype(int),
+                                                                           np.round(counts[hi]).astype(int),
+                                                                           scoringset.cls_labels[hi],
+                                                                           scoringset.labels[hi]))
 
                 save_model(epoch, model, optimizer, scheduler, output_path)
 
@@ -447,10 +408,10 @@ if __name__ == "__main__":
           .format('tile + image (pt.1{})'.format(', DYNAMIC SAMPLING' if args.hard_threshold is not None else ''),
                   'GPU' if torch.cuda.is_available() else 'CPU',
                   "Resume from \'{}\'".format(args.resume)
-                      if args.resume else "Encoder: {}".format(args.encoder),
+                  if args.resume else "Encoder: {}".format(args.encoder),
                   args.epochs,
                   'Validate every {} epoch(s)'.format(args.test_every)
-                      if args.test_every <= args.epochs else 'No validation',
+                  if args.test_every <= args.epochs else 'No validation',
                   args.lr, args.output)
           )
     print("Image batch size: {}".format(args.image_batch_size))
@@ -465,20 +426,19 @@ if __name__ == "__main__":
     kfold = None if args.test_every > args.epochs else 10
     trainset = LystoDataset(os.path.join(training_data_path, "training.h5"), organ=args.organ, augment=args.augment,
                             kfold=kfold, shuffle=True, num_of_imgs=100 if args.debug else 0)
-    valset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=args.organ, kfold=kfold,
-                          num_of_imgs=100 if args.debug else 0)
-
+    trainset.setmode(5)
     collate_fn = default_collate
     # TODO: how can I split the training step for distributed parallel training?
-    trainset.setmode(5)
-    valset.setmode(5)
     train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
-    val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,
                               sampler=train_sampler, pin_memory=True, collate_fn=collate_fn)
-    val_loader = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
-                            sampler=val_sampler, pin_memory=True)
-
+    if kfold is not None:
+        valset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=args.organ,
+                              kfold=kfold, num_of_imgs=100 if args.debug else 0)
+        valset.setmode(5)
+        val_sampler = DistributedSampler(valset) if dist.is_nccl_available() and args.distributed else None
+        val_loader = DataLoader(valset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+                                sampler=val_sampler, pin_memory=True)
 
     # model setup
     def to_device(model, device):
@@ -493,7 +453,6 @@ if __name__ == "__main__":
         else:
             model.to(device)
         return model
-
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
@@ -546,8 +505,8 @@ if __name__ == "__main__":
         }
     }
 
-    # optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
-    optimizer = optimizers['Adam']
+    optimizer = optimizers['SGD'] if args.scheduler is not None else optimizers['Adam']
+    # optimizer = optimizers['Adam']
     scheduler = schedulers[args.scheduler](optimizer,
                                            last_epoch=last_epoch_for_scheduler,
                                            **scheduler_kwargs[args.scheduler]) \
@@ -558,27 +517,16 @@ if __name__ == "__main__":
             scheduler.load_state_dict(cp['scheduler'])
 
     if args.reg_only:
-        if args.hard_threshold is not None:
-            train_reg_dynamic(total_epochs=args.epochs,
-                              last_epoch=last_epoch,
-                              test_every=args.test_every,
-                              model=model,
-                              device=device,
-                              thresh=args.hard_threshold,
-                              crit_reg=crit_reg,
-                              optimizer=optimizer,
-                              scheduler=scheduler,
-                              output_path=args.output)
-        else:
-            train_reg(total_epochs=args.epochs,
-                      last_epoch=last_epoch,
-                      test_every=args.test_every,
-                      model=model,
-                      device=device,
-                      crit_reg=crit_reg,
-                      optimizer=optimizer,
-                      scheduler=scheduler,
-                      output_path=args.output)
+        train_reg(total_epochs=args.epochs,
+                  last_epoch=last_epoch,
+                  test_every=args.test_every,
+                  model=model,
+                  device=device,
+                  crit_reg=crit_reg,
+                  optimizer=optimizer,
+                  scheduler=scheduler,
+                  output_path=args.output,
+                  thresh=args.hard_threshold)
     else:
         train(total_epochs=args.epochs,
               last_epoch=last_epoch,
@@ -589,7 +537,8 @@ if __name__ == "__main__":
               crit_reg=crit_reg,
               optimizer=optimizer,
               scheduler=scheduler,
-              output_path=args.output)
+              output_path=args.output,
+              thresh=args.hard_threshold)
 
     # train_cls(total_epochs=args.epochs,
     #           last_epoch=last_epoch,

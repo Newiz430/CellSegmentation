@@ -66,7 +66,7 @@ args = parser.parse_args()
 
 
 def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_path):
-    """pt.2: tile classifier training.
+    """pt.3: cell segmentation training.
 
     :param total_epochs:    迭代总次数
     :param last_epoch:      上一次迭代的次数（当继续训练时）
@@ -83,12 +83,12 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
 
     start = int(time.time())
     with SummaryWriter(comment=output_path.rsplit('/', maxsplit=1)[-1]) as writer:
-        delta = 1
 
         print("PT.III - cell segmentation branch training ...")
 
         for epoch in range(1 + last_epoch, total_epochs + 1):
             try:
+                # This will lead to problem
                 # if device.type == 'cuda':
                 #     torch.cuda.manual_seed(epoch)
                 # else:
@@ -253,7 +253,8 @@ if __name__ == "__main__":
             tiles = tiles[indices]
             groups = groups[indices]
 
-        pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess)
+        pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess,
+                                      output_path=os.path.join(training_data_path, "pseudomask"))
 
         trainset = Maskset(os.path.join(training_data_path, "training.h5"), pseudo_masks,
                            num_of_imgs=100 if args.debug else 0)

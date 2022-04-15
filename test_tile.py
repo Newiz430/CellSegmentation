@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import argparse
+import configparser
 import time
 import csv
 from collections import OrderedDict
@@ -120,7 +121,9 @@ if __name__ == "__main__":
         os.makedirs(args.output)
 
     # data loading
-    testing_data_path = "./data"
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    testing_data_path = config.get("data", "data_path")
     testset = LystoTestset(os.path.join(testing_data_path, "test.h5"), tile_size=args.tile_size, interval=args.interval,
                            num_of_imgs=20 if args.debug else 0)
     test_loader = DataLoader(testset, batch_size=args.tile_batch_size, shuffle=False, num_workers=args.workers,

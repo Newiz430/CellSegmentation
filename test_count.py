@@ -1,6 +1,6 @@
 import os
-import configparser
 import argparse
+import configparser
 import time
 import csv
 from collections import OrderedDict
@@ -97,6 +97,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.makedirs(args.output)
 
+    # data loading
     config = configparser.ConfigParser()
     config.read("config.ini", encoding="utf-8")
     testing_data_path = config.get("data", "data_path")

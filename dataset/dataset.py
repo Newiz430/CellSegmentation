@@ -21,6 +21,7 @@ import torchvision.utils as utils
 Image.MAX_IMAGE_PIXELS = None
 patch_size = np.array([299, 299])
 
+
 class LystoDataset(Dataset):
 
     def __init__(self, filepath=None, tile_size=None, interval=None, train=True, organ=None,
@@ -51,9 +52,8 @@ class LystoDataset(Dataset):
 
         self.train = train
         self.organ = organ
-        # self.visualize = False
         self.organs = []            # 全切片来源，list ( 20000 )
-        self.images = []            # list ( 20000 * 299 * 299 * 3 )
+        self.images = []            # array ( 20000 * 299 * 299 * 3 )
         self.labels = []            # 图像中的阳性细胞数目，list ( 20000 )
         self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签，list ( 20000 )
         self.transformIDX = []      # 数据增强的类别，list ( 20000 )
@@ -112,8 +112,7 @@ class LystoDataset(Dataset):
                     tileIDX += 1
                     self.add_data(org, img, label, tileidx=tileIDX)
                     # # augmentation for images with more cells
-                    # if self.train and self.augment and categorize(label) >= 3:
-                    if self.train and self.augment:
+                    if self.train and self.augment: # and categorize(label) >= 3:
                         for j in range(1, 4):
                             self.add_data(org, img, label, transidx=j)
 
@@ -146,12 +145,9 @@ class LystoDataset(Dataset):
 
     def random_delete(self, num):
 
-        idxes = np.sort(np.random.choice(len(self.images), len(self.images) - num, replace=False))
-        self.organs = list(np.asarray(self.organs)[idxes])
-        self.images = list(np.asarray(self.images)[idxes])
-        self.labels = list(np.asarray(self.labels)[idxes])
-        self.cls_labels = list(np.asarray(self.cls_labels)[idxes])
-        self.transformIDX = list(np.asarray(self.transformIDX)[idxes])
+        idxes = np.sort(np.random.choice(len(self.images), num, replace=False))
+        for i in reversed(list(idxes)):
+            del self.organs[i], self.images[i], self.labels[i], self.cls_labels[i], self.transformIDX[i]
 
     def setmode(self, mode):
         """
@@ -164,13 +160,12 @@ class LystoDataset(Dataset):
         """
         self.mode = mode
 
-    # def visualize_bboxes(self):
-    #     self.visualize = True
-
     def make_train_data(self, idxs):
         # 制作 tile mode 训练用数据集，当 tile 对应的图像的 label 为 n 时标签为 1 ，否则为 0
         self.train_data = [(self.tileIDX[i], self.tiles_grid[i],
                             0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs]
+        # if shuffle:
+        #     self.train_data = random.sample(self.train_data, len(self.train_data))
 
         pos = 0
         for _, _, label in self.train_data:
@@ -202,9 +197,6 @@ class LystoDataset(Dataset):
             label_cls = self.cls_labels[idx]
             label_reg = self.labels[idx]
 
-            # if self.visualize:
-            #     plt.imshow(image)
-
             # Get tiles
             tiles = []
             tile_grids = []
@@ -215,25 +207,6 @@ class LystoDataset(Dataset):
                     tiles.append(tile)
                     tile_grids.append((x, x + self.tile_size, y, y + self.tile_size))
                     tile_labels.append(label)
-
-                    # if self.visualize:
-                    #     plt.gca().add_patch(
-                    #         plt.Rectangle((x, y), x + self.size, y + self.size,
-                    #                       fill=False, edgecolor='red' if label == 0 else 'deepskyblue', linewidth=1)
-                    #     )
-
-            # # tile visualize testing
-            # if self.visualize:
-            #     plt.savefig('test/img{}.png'.format(idx))
-            #     plt.close()
-
-            # # 画边界框（有问题）
-            #     image_tensor = torch.from_numpy(tile.transpose((2, 0, 1))).contiguous()
-            #     utils.draw_bounding_boxes(image_tensor, torch.tensor(tile_grids),
-            #                               labels=['neg' if lbl == 0 else 'pos' for lbl in tile_labels],
-            #                               colors=list(cycle('red')))
-            #     utils.save_image(image, "test/img{}.png".format(idx))
-            #     print("Image is saved.")
 
             tiles = [self.transform[self.transformIDX[self.tileIDX[idx]]](tile) for tile in tiles]
             image = self.transform[self.transformIDX[idx]](image)
@@ -315,47 +288,6 @@ class EnsembleSet:
             self.training_idxes.append([idx for idx in range(split_size[i])] +
                                        [idx for idx in range(split_size[i + 1], split_size[-1])])
             self.validating_idxes.append([idx for idx in range(split_size[i], split_size[i + 1])])
-
-        # images = np.array_split(np.asarray(data.images), self.k)
-        # labels = np.array_split(np.asarray(data.labels), self.k)
-        # organs = np.array_split(np.asarray(data.organs), self.k)
-        # cls_labels = np.array_split(np.asarray(data.cls_labels), self.k)
-        # transformations = np.array_split(np.asarray(data.transformIDX), self.k)
-        #
-        # self.training_sets = [LystoDataset(kfold=None, _stacking_init=True) for _ in range(self.k)]
-        # self.validating_sets = [LystoDataset(kfold=None, _stacking_init=True) for _ in range(self.k)]
-        #
-        # for i in range(self.k):
-        #     for j in range(self.k):
-        #
-        #         if j == 0:
-        #             self.training_sets[i].images = list(np.concatenate(images[1:]))
-        #             self.training_sets[i].labels = list(np.concatenate(labels[1:]))
-        #             self.training_sets[i].organs = list(np.concatenate(organs[1:]))
-        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[1:]))
-        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[1:]))
-        #         elif j == self.k - 1:
-        #             self.training_sets[i].images = list(np.concatenate(images[:-1]))
-        #             self.training_sets[i].labels = list(np.concatenate(labels[:-1]))
-        #             self.training_sets[i].organs = list(np.concatenate(organs[:-1]))
-        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:-1]))
-        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[:-1]))
-        #         else:
-        #             self.training_sets[i].images = list(np.concatenate(images[:j])) + \
-        #                                            list(np.concatenate(images[j + 1:]))
-        #             self.training_sets[i].labels = list(np.concatenate(labels[:j])) + \
-        #                                            list(np.concatenate(labels[j + 1:]))
-        #             self.training_sets[i].organs = list(np.concatenate(organs[:j])) + \
-        #                                            list(np.concatenate(organs[j + 1:]))
-        #             self.training_sets[i].cls_labels = list(np.concatenate(cls_labels[:j])) + \
-        #                                                list(np.concatenate(cls_labels[j + 1:]))
-        #             self.training_sets[i].transformIDX = list(np.concatenate(transformations[:j])) + \
-        #                                                  list(np.concatenate(transformations[j + 1:]))
-        #         self.validating_sets[i].images = images[j]
-        #         self.validating_sets[i].labels = labels[j]
-        #         self.validating_sets[i].organs = organs[j]
-        #         self.validating_sets[i].cls_labels = cls_labels[j]
-        #         self.validating_sets[i].transformIDX = transformations[j]
 
     def get_loader(self, train, idx, **kwargs):
         if train:

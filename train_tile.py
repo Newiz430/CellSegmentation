@@ -51,6 +51,8 @@ parser.add_argument('-i', '--interval', type=int, default=20,
                     help='interval between adjacent tiles (default: 20)')
 parser.add_argument('-c', '--threshold', type=float, default=0.95,
                     help='minimal prob for tiles to show in generating heatmaps (default: 0.95)')
+parser.add_argument('--scratch', action="store_true",
+                    help='[ABLATION] encoder is trained if set')
 parser.add_argument('--distributed', action='store_true',
                     help='if distributed parallel training is enabled (seems to be no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -243,6 +245,11 @@ if __name__ == "__main__":
         model.load_state_dict(cp['state_dict'], strict=False)
         last_epoch = cp['epoch']
         last_epoch_for_scheduler = cp['scheduler']['last_epoch'] if cp['scheduler'] is not None else -1
+    elif args.scratch:
+        model = nets['resnet50']
+        model = to_device(model, device)
+        last_epoch = 0
+        last_epoch_for_scheduler = -1
     else:
         f = torch.load(args.model, map_location=device)
         model = nets[f['encoder']]
@@ -255,6 +262,8 @@ if __name__ == "__main__":
         last_epoch = 0
         last_epoch_for_scheduler = -1
     model.setmode("tile")
+    if args.scratch:
+        model.set_encoder_grads(True)
 
     crit_cls = nn.CrossEntropyLoss()
 
@@ -305,5 +314,4 @@ if __name__ == "__main__":
           threshold=args.threshold,
           tiles_per_pos=args.tiles_per_pos,
           topk_neg=args.topk_neg,
-          output_path=args.output
-          )
+          output_path=args.output)

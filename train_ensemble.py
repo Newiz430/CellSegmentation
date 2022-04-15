@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 now = int(time.time())
 
 # Training settings
-parser = argparse.ArgumentParser(prog="train_ensemble.py", description='pt.1: image assessment training.')
+parser = argparse.ArgumentParser(prog="train_ensemble.py", description='ensemble training of pt.1.')
 parser.add_argument('-e', '--epochs', type=int, default=30,
                     help='total number of epochs to train (default: 30)')
 parser.add_argument('-E', '--encoder', type=str, default='resnet50',

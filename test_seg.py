@@ -28,6 +28,7 @@ parser = argparse.ArgumentParser(prog="test_seg.py", description='Segmentation e
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('--draw_masks', action='store_true', help='evaluation via computing binary masks')
 parser.add_argument('--detect', action='store_true', help='evaluation via cell center localization')
+parser.add_argument('--soft_mask', action='store_true', help='output soft masks to output_path/soft')
 parser.add_argument('--smooth_method', type=str, default='gaussianblur',
                     help='smoothing method for cell detection, {\'gaussianblur\', \'distancetransform\'} '
                          '(default: \'gaussianblur\', using with --detect)')
@@ -355,7 +356,7 @@ if __name__ == "__main__":
     model.to(device)
 
     if args.draw_masks:
-        test_seg(testset, args.threshold, output_path=args.output)
+        test_seg(testset, args.threshold, soft=args.soft_mask, output_path=args.output)
     elif args.detect:
         smooth_params = {
             "gaussianblur": {

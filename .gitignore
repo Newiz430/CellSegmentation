@@ -6,6 +6,7 @@
 /runs/
 /soft/
 /.idea/
+/older codes/
 /test_detect/
 *.pth
 *.ipynb

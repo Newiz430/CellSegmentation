@@ -77,14 +77,13 @@ def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='
 
             if cls_limit:
                 for i, x in enumerate(output_reg):
-                    if cat_labels[i] == 0:
-                        output_reg[i] = 0  # use cls branch for artifact images
-                        # for i, x in enumerate(output_reg):
-                #     if cat_labels[i] > 4:
-                #         if categorize(x) > cat_labels[i]:
-                #             output_reg[i] = de_categorize(cat_labels[i])[1]
-                #         elif categorize(x) < cat_labels[i]:
-                #             output_reg[i] = de_categorize(cat_labels[i])[0]
+                    # if cat_labels[i] == 0:
+                    #     output_reg[i] = 0  # use cls branch for artifact images
+                    # if cat_labels[i] > 4:
+                    if categorize(x) > cat_labels[i]:
+                        output_reg[i] = de_categorize(cat_labels[i])[1]
+                    elif categorize(x) < cat_labels[i]:
+                        output_reg[i] = de_categorize(cat_labels[i])[0]
 
             categories = np.concatenate((categories, cat_labels))
             counts = np.concatenate((counts, output_reg))
