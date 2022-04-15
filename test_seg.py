@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 import numpy as np
 import cv2
-from skimage import io
+from skimage import io, morphology
 from sklearn.cluster import DBSCAN
 import torch
 import torch.nn as nn
@@ -75,6 +75,8 @@ def test_seg(testset, threshold, soft=False, output_path=None):
                 patch_id = b * len(output) + i
                 patch, slideidx = testset.get_a_patch(patch_id)
                 classes = mask > threshold
+                classes = morphology.remove_small_objects(classes, min_size=300)
+                classes = morphology.remove_small_holes(classes, area_threshold=100)
 
                 if soft:
                     soft_dir = os.path.join(output_path, 'soft')

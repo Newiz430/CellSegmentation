@@ -37,6 +37,9 @@ def generate_masks(dataset, tiles, groups, preprocess, save_masks=True, output_p
     groups: image indices for each tile
     """
 
+    os.makedirs(os.path.join(output_path, "rgb"))
+    os.makedirs(os.path.join(output_path, "mask"))
+
     pseudo_masks = np.zeros((len(dataset.images), *dataset.image_size)).astype(np.uint8)
 
     for i in range(len(groups)):
