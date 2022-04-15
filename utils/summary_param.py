@@ -21,12 +21,12 @@ def summary_param(model, batch_size, gpu='0'):
     # model.setmode("tile")
     # print("tile mode:\n")
     # summary(model, input_size=(3, 32, 32), batch_size=batch_size)
-    # model.setmode("image")
-    # print("\nimage mode:\n")
-    # summary(model, input_size=(3, 299, 299), batch_size=batch_size)
-    model.setmode("segment")
-    print("\nsegmentation mode:\n")
+    model.setmode("image")
+    print("\nimage mode:\n")
     summary(model, input_size=(3, 299, 299), batch_size=batch_size)
+    # model.setmode("segment")
+    # print("\nsegmentation mode:\n")
+    # summary(model, input_size=(3, 299, 299), batch_size=batch_size)
 
 
 if __name__ == "__main__":
