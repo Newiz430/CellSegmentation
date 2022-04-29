@@ -43,13 +43,14 @@ parser.add_argument('-c', '--threshold', type=float, default=0.95,
                          '(default: 0.95, no use if --skip_draw is chosen)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=32,
                     help='batch size of images (default: 32)')
-parser.add_argument('-e', '--epochs', type=int, default=30,
-                    help='total number of epochs to train (default: 30)')
+parser.add_argument('-e', '--epochs', type=int, default=15,
+                    help='total number of epochs to train (default: 15)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
                     help='learning rate scheduler if necessary, '
                          '{\'OneCycleLR\', \'ExponentialLR\', \'CosineAnnealingWarmRestarts\'} (default: None)')
+parser.add_argument('-a', '--augment', action="store_true", help='apply data augmentation')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('--distributed', action="store_true",
@@ -78,7 +79,7 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
     """
 
     fconv = open(os.path.join(output_path, '{}-seg-training.csv'.format(now)), 'w')
-    fconv.write('epoch,image_cls_loss,image_reg_loss,image_loss,image_seg_loss\n')
+    fconv.write('epoch,image_seg_loss\n')
     fconv.close()
 
     start = int(time.time())
@@ -233,36 +234,36 @@ if __name__ == "__main__":
 
         tiles, _, groups = rank(dataset, probs, args.threshold)
 
-        if args.preprocess:
-            from dataset import LystoTestset
-            from inference import inference_image
+        # if args.preprocess:
+        from dataset import LystoTestset
+        from inference import inference_image
 
-            # clear artifact images
-            limit_set = LystoTestset(os.path.join(training_data_path, "training.h5"),
-                                     num_of_imgs=100 if args.debug else 0)
-            limit_loader = DataLoader(limit_set, batch_size=args.image_batch_size, shuffle=False,
-                                      num_workers=args.workers, pin_memory=True)
+        # clear artifact images
+        limit_set = LystoTestset(os.path.join(training_data_path, "training.h5"),
+                                 num_of_imgs=100 if args.debug else 0)
+        limit_loader = DataLoader(limit_set, batch_size=args.image_batch_size, shuffle=False,
+                                  num_workers=args.workers, pin_memory=True)
 
-            limit_set.setmode("image")
-            model.setmode("image")
+        limit_set.setmode("image")
+        model.setmode("image")
 
-            counts = inference_image(limit_loader, model, device, mode='test')[1]
+        counts = inference_image(limit_loader, model, device, mode='test')[1]
 
-            img_indices = np.select([counts != 0], [counts]).nonzero()[0]
-            indices = [i for i, g in enumerate(groups) if g in img_indices]
-            tiles = tiles[indices]
-            groups = groups[indices]
+        img_indices = np.select([counts != 0], [counts]).nonzero()[0]
+        indices = [i for i, g in enumerate(groups) if g in img_indices]
+        tiles = tiles[indices]
+        groups = groups[indices]
 
         pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess,
                                       output_path=os.path.join(training_data_path, "pseudomask"))
 
-        trainset = Maskset(os.path.join(training_data_path, "training.h5"), pseudo_masks,
+        trainset = Maskset(os.path.join(training_data_path, "training.h5"), pseudo_masks, augment=args.augment,
                            num_of_imgs=100 if args.debug else 0)
 
     else:
         trainset = Maskset(os.path.join(training_data_path, "training.h5"),
                            os.path.join(training_data_path, "pseudomask"),
-                           num_of_imgs=100 if args.debug else 0)
+                           augment=args.augment, num_of_imgs=100 if args.debug else 0)
 
     train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,

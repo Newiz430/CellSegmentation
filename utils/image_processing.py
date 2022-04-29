@@ -2,12 +2,51 @@ import warnings
 import os
 from tqdm import tqdm
 import csv
+import shutil
 
 import numpy as np
 import cv2
 from skimage import io, morphology
 
 warnings.filterwarnings("ignore")
+
+
+def remove_small_regions(img_bin, min_object_size, hole_area_threshold):
+    img_bin = morphology.remove_small_objects(img_bin, min_size=min_object_size)
+    img_bin = morphology.remove_small_holes(img_bin, area_threshold=hole_area_threshold)
+    return img_bin
+
+
+def overlap_mask(img, img_bin, postprocess=True, min_object_size=300, hole_area_threshold=100, save=None):
+    if postprocess:
+        img_bin = remove_small_regions(img_bin, min_object_size=min_object_size,
+                                       hole_area_threshold=hole_area_threshold)
+    for i in range(3):
+        img[:, :, i] = img[:, :, i] * 0.5 + np.uint8(255 * img_bin) * 0.5  # 半黑色原图 + 半白色掩码
+    if save is not None:
+        io.imsave(save, img)
+    return img
+
+
+def dotting(img, points, radius=4, color=(255, 0, 0), thickness=cv2.FILLED, **kwargs):
+    for x, y in points:
+        img = cv2.circle(img, (x, y), radius, color, thickness, **kwargs)
+    return img
+
+
+def locate_cells(dataset, slideidx, grids, discarded_grids=None):
+
+    color = [255, 0, 0]
+    slide_file = dataset.files[slideidx]
+    slide = io.imread(os.path.join(dataset.filepath, slide_file)).astype(np.uint8)
+    for y, x in grids:
+        slide = cv2.circle(slide, (x, y), 4, color, cv2.FILLED)
+    if discarded_grids is not None:
+        color_discarded = [0, 0, 255]
+        for y, x in discarded_grids:
+            slide = cv2.circle(slide, (x, y), 4, color_discarded, cv2.FILLED)
+
+    return slide
 
 
 def save_images(dataset, prefix, output_path, num_of_imgs=0):
@@ -22,13 +61,19 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    bar = tqdm(dataset.images)
-    for i, img in enumerate(bar):
+    f = open(os.path.join(output_path, '{}_organ.csv'.format(prefix)), 'w', newline="")
+    w = csv.writer(f, delimiter=",")
+
+    bar = tqdm(zip(dataset.images, dataset.organs))
+    for i, (img, org) in enumerate(bar):
         if num_of_imgs != 0 and i == num_of_imgs:
             break
         name = '{}_{}_{}cells.png'.format(prefix, i + 1, dataset.labels[i]) if hasattr(dataset, 'labels') \
-            else '{}_{}.png'.format(prefix, i)
-        io.imsave(os.path.join(output_path, name), np.uint8(img))
+            else '{}_{}.png'.format(prefix, i + 1)
+        # io.imsave(os.path.join(output_path, name), np.uint8(img))
+        w.writerow([name, dataset.labels[i], org] if hasattr(dataset, 'labels') else [name, org])
+
+    f.close()
 
 
 def generate_masks(dataset, tiles, groups, preprocess, save_masks=True, output_path="./data/pseudomask"):
@@ -71,8 +116,7 @@ def preprocess_masks(img, mask):
     # intersect with mask for more precise borders
     mask = np.logical_and(mask, (1 - mask_hsv / 255).astype(bool))
     # remove small patches with low connectivity
-    mask = morphology.remove_small_objects(mask, min_size=400)
-    mask = morphology.remove_small_holes(mask, area_threshold=120)
+    mask = remove_small_regions(mask, min_object_size=400, hole_area_threshold=120)
 
     return mask
 
@@ -144,10 +188,40 @@ def save_images_with_masks(images, masks, threshold, output_path, soft=False):
     print("Test results saved in \'{}\'.".format(output_path))
 
 
+def crop_wsi(data_path, max_size=5e+7):
+
+    backup_path = os.path.join(data_path, 'backup')
+    if not os.path.exists(backup_path):
+        os.makedirs(backup_path)
+
+    for file in tqdm(sorted(os.listdir(data_path)), desc="WSI size checking & cropping"):
+        if os.path.getsize(os.path.join(data_path, file)) > max_size:
+            wsi = io.imread(os.path.join(data_path, file))
+            file = os.path.splitext(file)[0]
+            if file.find("-") > 0:
+                xorigin = int(file.split(sep='-', maxsplit=1)[1])
+                border = np.linspace(xorigin, xorigin + wsi.shape[1], 2 + 1, dtype=int)
+                for i in range(2):
+                    io.imsave(os.path.join(data_path,
+                                           "{}-{}.png".format(file.split(sep='-', maxsplit=1)[0], border[i])),
+                              wsi[:, border[i] - xorigin:border[i + 1] - xorigin])
+            else:
+                border = np.linspace(0, wsi.shape[1], 5 + 1, dtype=int)
+                for i in range(5):
+                    io.imsave(os.path.join(data_path, "{}-{}.png".format(file, border[i])), wsi[:, border[i]:border[i + 1]])
+
+                shutil.move(os.path.join(data_path, file + '.png'), backup_path)
+
+    for file in sorted(os.listdir(data_path)):
+        if os.path.getsize(os.path.join(data_path, file)) > max_size:
+            print("Huge images still exist. Cropping again... ")
+            crop_wsi(data_path)
+
+
 if __name__ == "__main__":
     from dataset import LystoDataset, LystoTestset
 
-    # imageset = LystoTestset("data/test.h5")
-    # save_images(imageset, 'test', './data/test')
-    imageset = LystoDataset("data/training.h5")
-    save_images(imageset, 'train', './data/train')
+    imageset = LystoTestset("../data/test.h5")
+    save_images(imageset, 'test', '../data/test')
+    # imageset = LystoDataset("data/training.h5")
+    # save_images(imageset, 'train', './data/train')

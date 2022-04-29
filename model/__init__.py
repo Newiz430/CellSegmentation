@@ -8,6 +8,6 @@ nets = {
     'resnet50': MILresnet50(pretrained=True),
     'efficientnet_b0': MILefficientnetB0(pretrained=True),
     'efficientnet_b2': MILefficientnetB2(pretrained=True),
-    'resnext50': MILresnext50_32x4d(pretrained=True),
-    'resnext101': MILresnext101_32x8d(pretrained=True),
+    'resnext50_32x4d': MILresnext50_32x4d(pretrained=True),
+    'resnext101_32x8d': MILresnext101_32x8d(pretrained=True),
 }

@@ -2,11 +2,14 @@ import collections
 import copy
 import os
 import sys
+import re
+import csv
 from tqdm import tqdm
 
 import h5py
 import random
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from itertools import cycle
 from PIL import Image
@@ -16,7 +19,8 @@ from openslide import OpenSlide
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
-import torchvision.utils as utils
+
+from utils import sort_files
 
 Image.MAX_IMAGE_PIXELS = None
 patch_size = np.array([299, 299])
@@ -411,13 +415,14 @@ class LystoTestset(Dataset):
 
 class Maskset(Dataset):
 
-    def __init__(self, filepath, mask_data, num_of_imgs=0):
+    def __init__(self, filepath, mask_data, augment=False, num_of_imgs=0):
 
         super(Maskset, self).__init__()
         assert type(mask_data) in [np.ndarray, str], "Invalid data type. "
 
-        if filepath:
-            f = h5py.File(filepath, 'r')
+        self.filepath = filepath
+        if self.filepath:
+            f = h5py.File(self.filepath, 'r')
         else:
             raise FileNotFoundError("Invalid data file.")
 
@@ -453,12 +458,26 @@ class Maskset(Dataset):
         #     io.imsave("ts/rgb_{}.png".format(i + 1), np.uint8(self.images[i]))
         #     io.imsave("ts/mask_{}.png".format(i + 1), np.uint8(self.masks[i]))
 
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225])
-        ])
+        if augment:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.ColorJitter(
+                    brightness=0.1,
+                    contrast=0.3,
+                    saturation=0.4,
+                    hue=0.05,
+                ),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225])
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225])
+            ])
 
     def __getitem__(self, idx):
 
@@ -511,7 +530,9 @@ class MaskTestset(Dataset):
                 else:
                     raise FileNotFoundError("Invalid data directory.")
 
-        elif os.path.isfile(self.filepath) and self.filepath.endswith(("h5", "hdf5")):
+        elif (os.path.exists(self.filepath)
+              and os.path.isfile(self.filepath)
+              and self.filepath.endswith(("h5", "hdf5"))):
             self.mode = "patch"
             self.images = []
             f = h5py.File(self.filepath, 'r')
@@ -577,20 +598,23 @@ class MaskTestset(Dataset):
             x, y = self.images_grid[idx]
             patch = np.asarray(slide.read_region((x, y), level=0, size=tuple(self.patch_size)).convert('RGB'))
             slide.close()
+            return patch, self.imageIDX[idx]
 
         elif self.mode == "ROI":
             image_file = os.path.join(self.filepath, self.files[self.imageIDX[idx]])
             image = io.imread(image_file).astype(np.uint8)
             x, y = self.images_grid[idx]
             patch = image[x:x + self.patch_size[0], y:y + self.patch_size[1]]
+            return patch, self.imageIDX[idx]
 
         else:
             patch = self.images[idx]
-        return patch, self.imageIDX[idx]
+            return [patch]
+
 
     def __getitem__(self, idx):
 
-        patch, _ = self.get_a_patch(idx)
+        patch = self.get_a_patch(idx)[0]
         patch = self.transform(patch)
         return patch
 
@@ -600,6 +624,74 @@ class MaskTestset(Dataset):
             return len(self.images)
         else:
             return len(self.images_grid)
+
+
+class PointTestset(Dataset):
+    def __init__(self, data_path="data/qupath/lysto", filename_pattern="(?<=test_)\d*", num_of_imgs=0):
+
+        """
+        filename_pattern: 如果按文件名排序并非数字顺序，使用该正则模式字符串将文件名中的数字提取出来
+        """
+
+        super(PointTestset, self).__init__()
+
+        self.image_path = os.path.join(data_path, "images")
+        self.mask_path = os.path.join(data_path, "masks")
+        self.point_path = os.path.join(data_path, "points")
+        self.names = []
+        self.images = []
+        self.masks = []
+        self.points = []
+        self.area_types = []
+        self.cancer_types = []
+
+        for i, file in enumerate(sort_files(os.listdir(self.image_path), filename_pattern)):
+            if num_of_imgs != 0 and i == num_of_imgs:
+                break
+            self.names.append(file)
+            self.images.append(io.imread(os.path.join(self.image_path, file)).astype(np.uint8))
+        for file in sort_files(os.listdir(self.mask_path), filename_pattern):
+            if num_of_imgs != 0 and len(self.masks) == len(self.images):
+                break
+            mask = io.imread(os.path.join(self.mask_path, file)).astype(np.uint8)
+            self.masks.append(mask[..., 0] if mask.ndim > 1 else mask)
+        for file in sort_files(os.listdir(self.point_path), filename_pattern):
+            if num_of_imgs != 0 and len(self.points) == len(self.images):
+                break
+            coord_data = pd.read_csv(os.path.join(self.point_path, file), sep='\t', usecols=[0, 1])
+            self.points.append(np.round(coord_data.values).astype(int))
+        w = csv.reader(open(os.path.join(data_path, 'image_type.csv'), 'r'), delimiter=',')
+        for line in w:
+            if line[0] in os.listdir(self.image_path):
+                self.cancer_types.append(re.findall('[A-Za-z]*', line[1])[0])
+                self.area_types.append(re.findall('[A-Za-z]*', line[2])[0])
+
+        assert len(self.masks) == len(self.images), "Mismatched number of masks and RGB images."
+
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225])
+        ])
+
+    def get_image(self, idx):
+        return self.images[idx]
+
+    def __getitem__(self, idx):
+
+        image = self.transform(self.images[idx])
+        mask = self.masks[idx]
+        points = self.points[idx]
+        area_type = self.area_types[idx]
+        cancer_type = self.cancer_types[idx]
+        # count = self.points[idx].shape[0]
+
+        # return image, mask, points, count
+        return image, mask, points, cancer_type, area_type
+
+    def __len__(self):
+        return len(self.images)
 
 
 def get_tiles(image, interval, size):

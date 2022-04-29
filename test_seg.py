@@ -1,26 +1,37 @@
+import collections
 import os
+import traceback
 import glob
 import shutil
 import argparse
 import time
 import csv
+import simplejson
 from collections import OrderedDict
-import traceback
+from easydict import EasyDict as edict
 from tqdm import tqdm
 
 import numpy as np
 import cv2
-from skimage import io, morphology
+from skimage import io
 from sklearn.cluster import DBSCAN
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import torchvision.transforms as tf
 
-from dataset import get_tiles, MaskTestset
+from dataset import get_tiles, MaskTestset, PointTestset
 from model import nets
 from inference import inference_seg
-from utils import save_images_with_masks
+from metrics import dice_coef, euclid_dist, precision_recall
+from utils import (dotting,
+                   crop_wsi,
+                   locate_cells,
+                   sort_files,
+                   overlap_mask,
+                   remove_small_regions,
+                   save_images_with_masks)
 
 now = int(time.time())
 
@@ -29,18 +40,25 @@ parser.add_argument('-m', '--model', type=str, help='path to pretrained model')
 parser.add_argument('--draw_masks', action='store_true', help='evaluation via computing binary masks')
 parser.add_argument('--detect', action='store_true', help='evaluation via cell center localization')
 parser.add_argument('--soft_mask', action='store_true', help='output soft masks to output_path/soft')
+parser.add_argument('--test_qupath', action='store_true', help='test qupath predictions for comparison')
+parser.add_argument('--area_type', action='store_true',
+                    help='split test data by area type, conflict with --cancer_type')
+parser.add_argument('--cancer_type', action='store_true',
+                    help='split test data by cancer type, conflict with --area_type')
 parser.add_argument('--smooth_method', type=str, default='gaussianblur',
                     help='smoothing method for cell detection, {\'gaussianblur\', \'distancetransform\'} '
-                         '(default: \'gaussianblur\', using with --detect)')
-parser.add_argument('-e', '--eps', type=int, default=15,
-                    help='radius of DBSCAN in cell detection (default: 15, using with --detect)')
+                         '(default: \'gaussianblur\', no use with --draw_masks)')
+parser.add_argument('--eps_min', type=float, default=5,
+                    help='minimum radius of DBSCAN in cell detection (default: 5, no use with --draw_masks)')
+parser.add_argument('--eps_max', type=float, default=15,
+                    help='maximum radius of DBSCAN in cell detection (default: 15, no use with --draw_masks)')
 parser.add_argument('-D', '--data_path', type=str, default='./data/test.h5',
                     help='path to testing data (default: ./data/test.h5)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=128,
                     help='batch size of images (default: 128)')
 parser.add_argument('-c', '--threshold', type=float, default=0.5,
                     help='minimal prob of pixels for generating segmentation masks '
-                         '(default: 0.5, using with --draw_masks)')
+                         '(default: 0.5, no use with --detect)')
 parser.add_argument('-w', '--workers', type=int, default=4,
                     help='number of dataloader workers (default: 4)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -54,8 +72,75 @@ parser.add_argument('--debug', action='store_true', help='use little data for de
 args = parser.parse_args()
 
 
-def test_seg(testset, threshold, soft=False, output_path=None):
+class AverageMeter:
+    def __init__(self):
+        self.reset()
 
+    def reset(self):
+        self._val = 0
+        self._sum = 0
+        self._count = 0
+
+    def update(self, val, n=1):
+        self._val = val
+        self._sum += val * n
+        self._count += n
+
+    @property
+    def val(self):
+        return self._val.item() if torch.is_tensor(self._val) else self._val
+
+    @property
+    def avg(self):
+        avg = self._sum / self._count
+        return avg.item() if torch.is_tensor(avg) else avg
+
+
+class MetricGroup:
+    def __init__(self):
+        self.P = AverageMeter()
+        self.R = AverageMeter()
+        self.F1 = AverageMeter()
+        self.dice = AverageMeter()
+
+    def avg(self):
+        return self.P.avg, self.R.avg, self.F1.avg, self.dice.avg
+
+    def val(self):
+        return self.P.val, self.R.val, self.F1.val, self.dice.val
+
+    def update(self, vals):
+        self.P.update(vals[0])
+        self.R.update(vals[1])
+        self.F1.update(vals[2])
+        self.dice.update(vals[3])
+
+
+def get_prf1(points_hat, points):
+    CELL_RADIUS_PXS = 16
+
+    # count true positives, false positives and false negatives
+    flag = np.full(len(points), False)
+    tp = 0
+    for p_hat in points_hat:
+        idx = None
+        dmin = np.Inf
+        for j, p in enumerate(points):
+            if not flag[j]:
+                dist = euclid_dist(p, p_hat)
+                if dist < dmin:
+                    idx = j
+                    dmin = dist
+        if dmin <= CELL_RADIUS_PXS:
+            flag[idx] = True
+            tp += 1
+    fp = len(points_hat) - tp
+    fn = sum(~flag)
+    p, r, f1 = precision_recall(tp, fp, fn, return_f1=True)
+    return p, r, f1, tp, fp, fn
+
+
+def test_seg(testset, threshold, soft=False, output_path=None):
     global epoch, model
 
     model.eval()
@@ -74,11 +159,10 @@ def test_seg(testset, threshold, soft=False, output_path=None):
             for i, mask in enumerate(output):
                 patch_id = b * len(output) + i
                 patch, slideidx = testset.get_a_patch(patch_id)
-                classes = mask > threshold
-                classes = morphology.remove_small_objects(classes, min_size=300)
-                classes = morphology.remove_small_holes(classes, area_threshold=100)
 
+                classes = mask > threshold
                 if soft:
+                    classes = remove_small_regions(classes, min_object_size=300, hole_area_threshold=100)
                     soft_dir = os.path.join(output_path, 'soft')
                     if not os.path.exists(soft_dir):
                         os.makedirs(soft_dir)
@@ -87,17 +171,15 @@ def test_seg(testset, threshold, soft=False, output_path=None):
 
                     patch = cv2.addWeighted(patch, 0.5, mask, 0.5, 0)
                 else:
-                    for ch in range(3):
-                        patch[:, :, ch] = patch[:, :, ch] * 0.5 + np.uint8(255 * classes) * 0.5
+                    overlap_mask(patch, classes)
 
                 io.imsave(os.path.join(output_path, 'test_{:05}.png'.format(patch_id + 1)), np.uint8(patch))
 
         print("Test results saved in \'{}\'.".format(output_path))
 
 
-def cell_detect(testset, resume=False, output_image=True, output_path=None, method="gaussianblur", eps=15,
-                **method_kwargs):
-
+def cell_detect(testset, resume=False, output_image=True, output_path=None, method="gaussianblur", eps_min=5,
+                eps_max=15, **method_kwargs):
     global epoch, model
 
     detect_path = os.path.join(output_path, 'detect')
@@ -153,8 +235,8 @@ def cell_detect(testset, resume=False, output_image=True, output_path=None, meth
                 elif slideidx != imageIDX:
                     io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
                     print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-                    output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps,
-                                                               **method_kwargs)
+                    output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count),
+                                                               eps_max=eps_max, eps_min=eps_min, **method_kwargs)
                     for x, y in output_grid:
                         if image_file.find("-") > 0:
                             x += int(image_file.split(sep='-', maxsplit=1)[1])
@@ -173,12 +255,13 @@ def cell_detect(testset, resume=False, output_image=True, output_path=None, meth
                     cell_count = 0
 
                 whole_image_mask[mask_grid[0]:mask_grid[0] + testset.patch_size[0],
-                                 mask_grid[1]:mask_grid[1] + testset.patch_size[1]] = mask
+                mask_grid[1]:mask_grid[1] + testset.patch_size[1]] = mask
                 cell_count += batch_counts[i]
 
         io.imsave(os.path.join(detect_path, 'mask_{}.png'.format(image_file)), whole_image_mask)
         print("total number of cells in image \'{}\' : {}".format(image_file, cell_count))
-        output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count), eps=eps, **method_kwargs)
+        output_grid, discarded = meanshift_cluster(whole_image_mask, method, int(cell_count),
+                                                   eps_max=eps_max, eps_min=eps_min, **method_kwargs)
         for x, y in output_grid:
             if image_file.find("-") > 0:
                 x += int(image_file.split(sep='-', maxsplit=1)[1])
@@ -231,44 +314,14 @@ def cell_detect(testset, resume=False, output_image=True, output_path=None, meth
         print("Test results saved in \'{}\'.".format(detect_path))
 
 
-def crop_wsi(data_path, max_size=5e+7):
-
-    backup_path = os.path.join(data_path, 'backup')
-    if not os.path.exists(backup_path):
-        os.makedirs(backup_path)
-
-    for file in tqdm(sorted(os.listdir(data_path)), desc="WSI size checking & cropping"):
-        if os.path.getsize(os.path.join(data_path, file)) > max_size:
-            wsi = io.imread(os.path.join(data_path, file))
-            file = os.path.splitext(file)[0]
-            if file.find("-") > 0:
-                xorigin = int(file.split(sep='-', maxsplit=1)[1])
-                border = np.linspace(xorigin, xorigin + wsi.shape[1], 2 + 1, dtype=int)
-                for i in range(2):
-                    io.imsave(os.path.join(data_path,
-                                           "{}-{}.png".format(file.split(sep='-', maxsplit=1)[0], border[i])),
-                              wsi[:, border[i] - xorigin:border[i + 1] - xorigin])
-            else:
-                border = np.linspace(0, wsi.shape[1], 5 + 1, dtype=int)
-                for i in range(5):
-                    io.imsave(os.path.join(data_path, "{}-{}.png".format(file, border[i])), wsi[:, border[i]:border[i + 1]])
-
-                shutil.move(os.path.join(data_path, file + '.png'), backup_path)
-
-    for file in sorted(os.listdir(data_path)):
-        if os.path.getsize(os.path.join(data_path, file)) > max_size:
-            print("Huge images still exist. Cropping again... ")
-            crop_wsi(data_path)
-
-
-def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, window_size=16, interval=10, eps=15,
-                      **method_kwargs):
-    """Meanshift clustering for excluding redundant points. """
+def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, window_size=16, interval=10, eps_min=5,
+                      eps_max=15, **method_kwargs):
+    """Meanshift clustering for excluding redundant points. Mask should be a 3-dimensional RGB image. """
     tiles = get_tiles(mask, interval, window_size)
     if method == "gaussianblur":
         mask = cv2.GaussianBlur(mask, **method_kwargs)
     elif method == "distancetransform":
-        thr_for_dt = 120  # [0, 255]
+        thr_for_dt = 10  # [0, 255]
         mask = cv2.distanceTransform(np.asarray((mask > thr_for_dt) * 255, dtype=np.uint8), **method_kwargs)
         mask = cv2.normalize(mask, mask, 0, 1, cv2.NORM_MINMAX) * 255
         mask = np.round(mask).astype(np.uint8)
@@ -281,7 +334,8 @@ def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, wind
 
     grids = []
     iters = []  # number of iters, for debugging
-    crit_stop = (cv2.TERM_CRITERIA_EPS, 0, 0.00001)
+    # crit_stop = (cv2.TERM_CRITERIA_EPS, 0, 0.00001)
+    crit_stop = (cv2.TERM_CRITERIA_COUNT, 5, 0)
 
     for tw in tqdm(track_windows, desc="cell clustering", colour='red', leave=False):
         ret, (y, x, w, h) = cv2.meanShift(mask, tw, crit_stop)
@@ -292,6 +346,11 @@ def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, wind
     new_grids = []
 
     if len(grids) != 0:
+        # dynamic setting eps based on cell count
+        if cell_count < 30:
+            eps = eps_max
+        else:
+            eps = eps_min
         grid_labels = DBSCAN(eps, min_samples=1, n_jobs=-1).fit_predict(grids)
         for i in range(np.max(grid_labels) + 1):
             idx = np.column_stack((grid_labels == i, grid_labels == i))
@@ -306,60 +365,276 @@ def meanshift_cluster(mask, method, cell_count, thr_for_setting_points=0.2, wind
     return new_grids[:cell_count], new_grids[cell_count:]
 
 
-def locate_cells(dataset, slideidx, grids, discarded_grids=None):
+def test_qupath(mode="lysto", categorize_by=None):
 
-    color = [255, 0, 0]
-    slide_file = dataset.files[slideidx]
-    slide = io.imread(os.path.join(dataset.filepath, slide_file)).astype(np.uint8)
-    for y, x in grids:
-        slide = cv2.circle(slide, (x, y), 4, color, cv2.FILLED)
-    if discarded_grids is not None:
-        color_discarded = [0, 0, 255]
-        for y, x in discarded_grids:
-            slide = cv2.circle(slide, (x, y), 4, color_discarded, cv2.FILLED)
-
-    return slide
-
-
-if __name__ == "__main__":
-
-    print("Testing settings: ")
-    print("Device: {} | Model: {} | Data directory: {} | Image batch size: {}\n"
-          "Mode: {} | {} | Output directory: {}"
-          .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.data_path, args.image_batch_size,
-                  "segmentation" if args.draw_masks else "location detection",
-                  "Threshold: {}".format(args.threshold) if args.draw_masks
-                      else "Smoothing method: {}".format(args.smooth_method),
-                  args.output))
-    if not os.path.exists(args.output):
-        os.makedirs(args.output)
-
-    print("Cropping large WSIs to fit memory... ")
-    crop_wsi(args.data_path)
-
-    # data loading
-    testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=1 if args.debug else 0)
-    # testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=20 if args.debug else 0)
-    test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+    assert mode in {"lysto", "ihc"}
+    filename_pattern = "(?<=test_)\d*" if mode == "lysto" else None
+    testset = PointTestset(args.data_path, filename_pattern, num_of_imgs=1 if args.debug else 0)
+    test_loader = DataLoader(testset, batch_size=1, shuffle=False, num_workers=args.workers,
                              pin_memory=False)
 
+    f = open(os.path.join(args.output, "center.csv"), 'w', newline="")
+    w = csv.writer(f, delimiter=",")
+    w.writerow(["id", "tp", "fp", "fn", "p", "r", "f1", "dice"])
+
+    if mode == "lysto" and categorize_by == "cancer_type":
+        metrics = {
+            "breast": MetricGroup(),
+            "colon": MetricGroup(),
+            "prostate": MetricGroup()
+        }
+    elif categorize_by == "area_type":
+        metrics = {
+            "regular": MetricGroup(),
+            "clustered": MetricGroup(),
+            "artifact": MetricGroup()
+        }
+    else:
+        metrics = MetricGroup()
+
+    mask_files = sort_files(os.listdir(os.path.join(args.data_path, "qupath_mask")), filename_pattern)
+    point_files = sort_files(os.listdir(os.path.join(args.data_path, "qupath_point")), filename_pattern)
+    for i, (_, mask, points, cancer, area) in enumerate(tqdm(test_loader, desc="testing")):
+        points_hat = []
+        points = points[0]
+        mask = mask[0].cpu().to(dtype=torch.float32)
+        mask_hat = io.imread(os.path.join(args.data_path, "qupath_mask", mask_files[i]))
+        mask_hat = mask_hat[..., 0] if mask_hat.ndim > 1 else mask_hat
+        mask_hat = remove_small_regions(mask_hat, min_object_size=300, hole_area_threshold=100)
+        dice = dice_coef(torch.from_numpy(mask_hat).to(dtype=torch.float32), mask / 255)
+        # read points
+        s = edict(simplejson.load(open(os.path.join(args.data_path, "qupath_point", point_files[i]), 'r')))
+        for i, prop in enumerate(s.features):
+            if prop.properties.object_type == "detection" and prop.properties.classification.name == "Positive":
+                # Approximately choose the first coordinate as the center point
+                points_hat.append([max(0, np.round(prop.geometry.coordinates[0][0][0]).astype(int)),
+                                   max(0, np.round(prop.geometry.coordinates[0][0][1]).astype(int))])
+        p, r, f1, tp, fp, fn = get_prf1(np.asarray(points_hat), points)
+        if mode == "lysto" and categorize_by == "cancer_type":
+            metrics[cancer[0]].update([p, r, f1, dice])
+        elif categorize_by == "area_type":
+            metrics[area[0]].update([p, r, f1, dice])
+        else:
+            metrics.update([p, r, f1, dice])
+        # draw labelled images
+        original_img = testset.get_image(i).copy()
+        color_gt = (255, 0, 0)  # RED
+        color_hat = (0, 255, 0)  # GREEN
+        dotting(original_img, points.cpu().numpy(), color=color_gt)
+        dotting(original_img, np.asarray(points_hat), color=color_hat, thickness=2)
+        io.imsave(os.path.join(args.data_path, 'qupath_centered', testset.names[i]), original_img)
+
+        # cover masks on images
+        original_img = testset.get_image(i).copy()
+        overlap_mask(original_img, mask_hat, postprocess=False,
+                     save=os.path.join(args.data_path, 'qupath_predict_mask', testset.names[i]))
+        w.writerow([testset.names[i], str(tp), str(fp), str(fn), str(p), str(r), str(f1), str(dice)])
+
+    if mode == "lysto" and categorize_by == "cancer_type":
+        print("Breast: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['breast'].avg()))
+        print("Colon: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['colon'].avg()))
+        print("Prostate: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['prostate'].avg()))
+    elif categorize_by == "area_type":
+        print("Regular areas: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['regular'].avg()))
+        print("Clustered cells: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['clustered'].avg()))
+        print("Artifacts: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['artifact'].avg()))
+    else:
+        print("Average Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics.avg()))
+        res = open("qupath_out.txt", 'a')
+        res.writelines(["\n\nthr:" + str(args.threshold),
+                        "\n\tAverage Precision: {}\n\tAverage Recall: {}\n\tAverage F1: {}\n\tAverage Dice: {}"
+                       .format(*map(str, metrics.avg()))])
+        res.close()
+    f.close()
+
+
+def test(mode="lysto", categorize_by=None, method="gaussianblur", eps_min=5, eps_max=15, **method_kwargs):
+
+    assert mode in {"lysto", "ihc"}
+    filename_pattern = "(?<=test_)\d*" if mode == "lysto" else None
+    testset = PointTestset(args.data_path, filename_pattern, num_of_imgs=1 if args.debug else 0)
+    test_loader = DataLoader(testset, batch_size=1, shuffle=False, num_workers=args.workers,
+                             pin_memory=False)
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
-    f = torch.load(args.model, map_location=device)
-    model = nets[f['encoder']]
-    epoch = f['epoch']
+    m = torch.load(args.model, map_location=device)
+    model = nets[m['encoder']]
+    epoch = m['epoch']
     # load all params
     model.load_state_dict(
-        OrderedDict({k: v for k, v in f['state_dict'].items()
+        OrderedDict({k: v for k, v in m['state_dict'].items()
                      if k.startswith(model.encoder_prefix + model.tile_module_prefix +
                                      model.image_module_prefix + model.seg_module_prefix)}),
         strict=False)
     model.setmode("segment")
     model.to(device)
+    model.eval()
 
-    if args.draw_masks:
-        test_seg(testset, args.threshold, soft=args.soft_mask, output_path=args.output)
-    elif args.detect:
+    f = open(os.path.join(args.output, "center.csv"), 'w', newline="")
+    w = csv.writer(f, delimiter=",")
+    w.writerow(["id", "count", "tp", "fp", "fn", "p", "r", "f1", "dice"])
+
+    if mode == "lysto" and categorize_by == "cancer_type":
+        metrics = {
+            "breast": MetricGroup(),
+            "colon": MetricGroup(),
+            "prostate": MetricGroup()
+        }
+    elif categorize_by == "area_type":
+        metrics = {
+            "regular": MetricGroup(),
+            "clustered": MetricGroup(),
+            "artifact": MetricGroup()
+        }
+    else:
+        metrics = MetricGroup()
+
+    with torch.no_grad():
+        for i, (image, mask, points, cancer, area) in enumerate(tqdm(test_loader, desc="testing")):
+            points = points[0]
+            mask = mask[0].cpu().to(dtype=torch.float32)
+            mask_hat = model(image.to(device)).to(dtype=torch.float32)
+            mask_hat = F.softmax(mask_hat, dim=1)[:, 1][0].cpu().numpy()
+            model.setmode("image")
+            output_reg = model(image.to(device))[1].detach()[:, 0].clone().cpu()
+            count = np.round(output_reg[0].item()).astype(int)
+            model.setmode("segment")
+
+            # cell count limitation
+            if count == 0:
+                mask_hat = 0 * mask_hat
+            classes = mask_hat > args.threshold
+            classes = remove_small_regions(classes, min_object_size=300, hole_area_threshold=100)
+            dice = dice_coef(torch.from_numpy(classes).to(dtype=torch.float32), mask / 255)
+
+            output_grid, discarded = meanshift_cluster(mask_hat * 255, method=method,
+                                                       cell_count=count, eps_max=eps_max, eps_min=eps_min,
+                                                       **method_kwargs)
+            output_grid = np.array([(y, x) for (x, y) in output_grid])
+            # if len(discarded) == 0:
+            #     count = len(output_grid)
+            p, r, f1, tp, fp, fn = get_prf1(output_grid, points)
+            if mode == "lysto" and categorize_by == "cancer_type":
+                metrics[cancer[0]].update([p, r, f1, dice])
+            elif categorize_by == "area_type":
+                metrics[area[0]].update([p, r, f1, dice])
+            else:
+                metrics.update([p, r, f1, dice])
+
+            # draw labelled images
+            original_img = testset.get_image(i).copy()
+            color_gt = (255, 0, 0)  # RED
+            color_hat = (0, 255, 0)  # GREEN
+            dotting(original_img, points.cpu().numpy(), color=color_gt)
+            dotting(original_img, output_grid, color=color_hat, thickness=2)
+            io.imsave(os.path.join(args.data_path, 'centered', testset.names[i]), original_img)
+
+            # cover masks on images
+            original_img = testset.get_image(i).copy()
+            overlap_mask(original_img, classes, postprocess=False,
+                         save=os.path.join(args.data_path, 'predict_mask', testset.names[i]))
+            w.writerow([testset.names[i], str(count), str(tp), str(fp), str(fn),
+                        str(p), str(r), str(f1), str(dice)])
+
+    if mode == "lysto" and categorize_by == "cancer_type":
+        print("Breast: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['breast'].avg()))
+        print("Colon: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['colon'].avg()))
+        print("Prostate: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['prostate'].avg()))
+    elif categorize_by == "area_type":
+        print("Regular areas: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['regular'].avg()))
+        print("Clustered cells: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['clustered'].avg()))
+        print("Artifacts: \nAverage Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics['artifact'].avg()))
+    else:
+        print("Average Precision: {}\nAverage Recall: {}\nAverage F1: {}\nAverage Dice: {}"
+              .format(*metrics.avg()))
+        res = open("out.txt", 'a')
+        res.writelines(["\n\nthr:" + str(args.threshold),
+                        "\n\tAverage Precision: {}\n\tAverage Recall: {}\n\tAverage F1: {}\n\tAverage Dice: {}"
+                       .format(*map(str, metrics.avg()))])
+        res.close()
+
+    print("Test results saved in \'{}\' and \'{}\'.".format(os.path.join(args.data_path, 'centered'),
+                                                            os.path.join(args.data_path, 'predict_mask')))
+
+    f.close()
+
+
+if __name__ == "__main__":
+
+    print("Testing settings: ")
+    print("Device: {} | Model: {} | Data directory: {} | Image batch size: {}"
+          .format('GPU' if torch.cuda.is_available() else 'CPU', args.model, args.data_path, args.image_batch_size))
+
+    if not os.path.exists(args.output):
+        os.makedirs(args.output)
+
+    if args.test_qupath:
+        categorize_by = "area_type" if args.area_type else None
+        print("Mode: {} (QuPath) | Categorize by: {}\nThreshold: {} | Smoothing method: {} | eps: [{}, {}]"
+              .format(os.path.basename(args.data_path),
+                      categorize_by if categorize_by is not None else "",
+                      args.threshold, args.smooth_method, args.eps_min, args.eps_max))
+        test_qupath(os.path.basename(args.data_path), categorize_by)
+    elif args.draw_masks or args.detect:
+        print("Mode: {} | {} | Output directory: {}"
+              .format("segmentation" if args.draw_masks else "location detection",
+                      "Threshold: {}".format(args.threshold) if args.draw_masks
+                      else "Smoothing method: {} | eps: [{}, {}]".format(args.smooth_method, args.eps_min, args.eps_max),
+                      args.output))
+        if not args.data_path.endswith(("h5", "hdf5")):
+            print("Cropping large WSIs to fit memory... ")
+            crop_wsi(args.data_path)
+
+        # data loading
+        testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=1 if args.debug else 0)
+        # testset = MaskTestset(args.data_path, resume_from=args.resume_from, num_of_imgs=20 if args.debug else 0)
+        test_loader = DataLoader(testset, batch_size=args.image_batch_size, shuffle=False, num_workers=args.workers,
+                                 pin_memory=False)
+
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu', args.device)
+        m = torch.load(args.model, map_location=device)
+        model = nets[m['encoder']]
+        epoch = m['epoch']
+        # load all params
+        model.load_state_dict(
+            OrderedDict({k: v for k, v in m['state_dict'].items()
+                         if k.startswith(model.encoder_prefix + model.tile_module_prefix +
+                                         model.image_module_prefix + model.seg_module_prefix)}),
+            strict=False)
+        model.setmode("segment")
+        model.to(device)
+
+        if args.draw_masks:
+            test_seg(testset, args.threshold, soft=args.soft_mask, output_path=args.output)
+        if args.detect:
+            smooth_params = {
+                "gaussianblur": {
+                    "ksize": (15, 15),
+                    "sigmaX": 3.
+                },
+                "distancetransform": {
+                    "distanceType": cv2.DIST_L2,
+                    "maskSize": cv2.DIST_MASK_PRECISE
+                }
+            }
+            cell_detect(testset, resume=args.resume_from is not None, output_image=True, output_path=args.output,
+                        method=args.smooth_method, eps_min=args.eps_min, eps_max=args.eps_max,
+                        **smooth_params[args.smooth_method])
+    else:
         smooth_params = {
             "gaussianblur": {
                 "ksize": (15, 15),
@@ -370,9 +645,15 @@ if __name__ == "__main__":
                 "maskSize": cv2.DIST_MASK_PRECISE
             }
         }
-        cell_detect(testset, resume=args.resume_from is not None, output_image=True, output_path=args.output,
-                    method=args.smooth_method, eps=args.eps, **smooth_params[args.smooth_method])
-    else:
-        raise Exception("Something wrong in setting test modes. "
-                        "Choose either \'--draw_masks\' or \'--detect\'. "
-                        "See \'python test_seg.py -h\' for more details. ")
+        if args.area_type:
+            categorize_by = "area_type"
+        elif args.cancer_type:
+            categorize_by = "cancer_type"
+        else:
+            categorize_by = None
+        print("Mode: {} | Categorize by: {}\nThreshold: {} | Smoothing method: {} | eps: [{}, {}]"
+              .format(os.path.basename(args.data_path),
+                      categorize_by if categorize_by is not None else "",
+                      args.threshold, args.smooth_method, args.eps_min, args.eps_max))
+        test(os.path.basename(args.data_path), categorize_by=categorize_by, method=args.smooth_method,
+             eps_min=args.eps_min, eps_max=args.eps_max, **smooth_params[args.smooth_method])

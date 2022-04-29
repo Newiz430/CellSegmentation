@@ -43,18 +43,24 @@ class WeightedMSELoss(nn.Module):
 
 class DiceLoss(nn.Module):
 
-    def __init__(self, epsilon=1e-6):
+    def __init__(self, epsilon=1e-6, reduction='mean'):
         super(DiceLoss, self).__init__()
+        assert reduction in ('mean', 'sum'), "\'reduction\' must be one of (\'mean\', \'sum\'). "
         self.epsilon = epsilon
+        self.reduction = reduction
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
-        # you need to extract dim [1] cuz input is like [n, 2, 300, 300] and target like [n, 300, 300]
-        # dice_coef takes [300, 300] as input
-        if inputs.ndim == 4:
-            inputs = inputs[:, 1]
+        # # you need to extract dim [1] cuz input is like [n, 2, 300, 300] and target like [n, 300, 300]
+        # # dice_coef takes [n, 300, 300] as input
+        # if inputs.ndim == 4:
+        #     inputs = inputs[:, 1]
 
-        dice = 0
-        for i in range(inputs.size(0)):
-            # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
-            dice += dice_coef(inputs[i], targets[i], self.epsilon)
-        return 1 - dice
+        if self.reduction == 'mean':
+            dice = torch.mean(1 - dice_coef(inputs, targets, self.epsilon))
+        else:
+            dice = torch.sum(1 - dice_coef(inputs, targets, self.epsilon))
+        return dice
+        # for i in range(inputs.size(0)):
+        #     # dice += dice_coef(inputs[i, ...], targets[i, ...], self.epsilon)
+        #     dice += dice_coef(inputs[i], targets[i], self.epsilon)
+        # return 1 - dice

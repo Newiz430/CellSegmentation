@@ -1,4 +1,5 @@
 import numpy as np
+import sklearn.metrics
 from sklearn import metrics
 import torch
 
@@ -32,12 +33,34 @@ def weighted_mse(inputs, targets, reduction='mean'):
     return torch.mean(tmp) if reduction == 'mean' else torch.sum(tmp)
 
 
-def dice_coef(inputs, targets, epsilon=1e-6):
+def dice_coef(batch_inputs, batch_targets, epsilon=1e-6):
 
-    assert inputs.dtype == targets.dtype, "Input & target vectors should have same dtype. "
-    inter = torch.dot(inputs[-1], targets[-1])  # 最后一维作点积
-    sets_sum = torch.sum(inputs) + torch.sum(targets)
-    if sets_sum.item() == 0:
-        sets_sum = 2 * inter
+    assert batch_inputs.dtype == batch_targets.dtype, "Input & target vectors should have same dtype. "
+    if batch_inputs.ndim == 2 and batch_targets.ndim == 2:
+        batch_inputs = torch.flatten(batch_inputs)
+        batch_targets = torch.flatten(batch_targets)
+        a = torch.sum(batch_inputs * batch_targets)
+        b = torch.sum(batch_inputs * batch_inputs)
+        c = torch.sum(batch_targets * batch_targets)
+    else:
+        batch_inputs = batch_inputs.contiguous().view(batch_inputs.size()[0], -1)
+        batch_targets = batch_targets.contiguous().view(batch_targets.size()[0], -1).float()
+        a = torch.sum(batch_inputs * batch_targets, 1)
+        b = torch.sum(batch_inputs * batch_inputs, 1)
+        c = torch.sum(batch_targets * batch_targets, 1)
 
-    return (2 * inter + epsilon) / (sets_sum + epsilon)
+    d = (2 * a + epsilon) / (b + c + epsilon)
+    return d
+
+
+def euclid_dist(p1, p2):
+    return np.sqrt(sum([(d1 - d2) * (d1 - d2) for (d1, d2) in zip(p1, p2)]))
+
+
+def precision_recall(tp, fp, fn, return_f1=False):
+    p = 1 if tp + fp == 0 else tp / (tp + fp)
+    r = 1 if tp + fn == 0 else tp / (tp + fn)
+    if return_f1:
+        return p, r, 0 if p + r == 0 else (2 * p * r) / (p + r)
+    else:
+        return p, r

@@ -186,12 +186,13 @@ def train_seg(loader, epoch, total_epochs, model, device, optimizer, scheduler):
         # output: [n, 2, 299, 299]
         # mask:   [n,    299, 299]
         ce = CELoss()(output, mask.to(dtype=torch.long))
-        # dice = DiceLoss()(F.softmax(output), mask)
+        dice = DiceLoss()(F.softmax(output)[:, 1], mask)
         print(f"ce:{ce}"
-        #     f", dice:{dice}"
+              f", dice:{dice}"
              )
         # loss = dice + ce
-        loss = ce
+        # loss = ce
+        loss = dice
         loss.backward()
         optimizer.step()
         if isinstance(scheduler, (CyclicLR, OneCycleLR)):
