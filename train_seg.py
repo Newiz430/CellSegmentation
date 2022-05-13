@@ -28,10 +28,12 @@ now = int(time.time())
 parser = argparse.ArgumentParser(prog="train_seg.py", description='pt.3: cell segmentation branch training.')
 parser.add_argument('-m', '--model', type=str, help='path to pretrained model in pt.2')
 parser.add_argument('--skip_draw', action='store_true',
-                    help='skip binary mask generating step, using the images from data/pseudomask instead')
+                    help='skip binary mask generating step, using the images from data/<pseudomask_dir> instead')
 parser.add_argument('-p', '--preprocess', action='store_true',
                     help='whether or not processing result masks by morphological approaches '
                          '(no use if --skip_draw is chosen)')
+parser.add_argument('-P', '--pseudomask_dir', type=str, default='pseudomask', metavar='DIRECTORY',
+                    help='dir name to save pseudo masks (default: pseudomask)')
 parser.add_argument('-b', '--tile_batch_size', type=int, default=40960,
                     help='batch size of tiles (default: 40960, no use if --skip_draw is chosen)')
 parser.add_argument('-i', '--interval', type=int, default=5,
@@ -43,8 +45,8 @@ parser.add_argument('-c', '--threshold', type=float, default=0.95,
                          '(default: 0.95, no use if --skip_draw is chosen)')
 parser.add_argument('-B', '--image_batch_size', type=int, default=32,
                     help='batch size of images (default: 32)')
-parser.add_argument('-e', '--epochs', type=int, default=15,
-                    help='total number of epochs to train (default: 15)')
+parser.add_argument('-e', '--epochs', type=int, default=30,
+                    help='total number of epochs to train (default: 30)')
 parser.add_argument('-l', '--lr', type=float, default=0.0005, metavar='LR',
                     help='learning rate (default: 0.0005)')
 parser.add_argument('-s', '--scheduler', type=str, default=None,
@@ -53,6 +55,8 @@ parser.add_argument('-s', '--scheduler', type=str, default=None,
 parser.add_argument('-a', '--augment', action="store_true", help='apply data augmentation')
 parser.add_argument('-w', '--workers', default=4, type=int,
                     help='number of dataloader workers (default: 4)')
+parser.add_argument('--scratch', action="store_true",
+                    help='[ABLATION] encoder is trained if set')
 parser.add_argument('--distributed', action="store_true",
                     help='if distributed parallel training is enabled (seems to be no avail)')
 parser.add_argument('-d', '--device', type=int, default=0,
@@ -109,7 +113,11 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
                 # if validate(epoch, test_every):
                 #     print('Validating ...')
 
-                save_model(epoch, model, optimizer, scheduler, output_path)
+                # --------------------------
+                # --------------------------
+                # --------------------------
+                if epoch >= args.epochs - 1:
+                    save_model(epoch, model, optimizer, scheduler, output_path)
 
             except KeyboardInterrupt:
                 save_model(epoch, model, optimizer, scheduler, output_path)
@@ -185,6 +193,12 @@ if __name__ == "__main__":
             strict=False)
         last_epoch = cp['epoch']
         last_epoch_for_scheduler = cp['scheduler']['last_epoch'] if cp['scheduler'] is not None else -1
+    elif args.scratch:
+        model = nets['resnet50']
+        model = to_device(model, device)
+        last_epoch = 0
+        last_epoch_for_scheduler = -1
+        args.skip_draw = True
     else:
         f = torch.load(args.model, map_location=device)
         model = nets[f['encoder']]
@@ -255,15 +269,15 @@ if __name__ == "__main__":
         groups = groups[indices]
 
         pseudo_masks = generate_masks(dataset, tiles, groups, preprocess=args.preprocess,
-                                      output_path=os.path.join(training_data_path, "pseudomask"))
-
+                                      output_path=os.path.join(training_data_path, args.pseudomask_dir))
         trainset = Maskset(os.path.join(training_data_path, "training.h5"), pseudo_masks, augment=args.augment,
                            num_of_imgs=100 if args.debug else 0)
+        generate_masks(dataset, tiles, groups, preprocess=args.preprocess,
+                       output_path=os.path.join(training_data_path, args.pseudomask_dir))
 
-    else:
-        trainset = Maskset(os.path.join(training_data_path, "training.h5"),
-                           os.path.join(training_data_path, "pseudomask"),
-                           augment=args.augment, num_of_imgs=100 if args.debug else 0)
+    trainset = Maskset(os.path.join(training_data_path, "training.h5"),
+                       os.path.join(training_data_path, args.pseudomask_dir),
+                       augment=args.augment, num_of_imgs=100 if args.debug else 0)
 
     train_sampler = DistributedSampler(trainset) if dist.is_nccl_available() and args.distributed else None
     train_loader = DataLoader(trainset, batch_size=args.image_batch_size, shuffle=True, num_workers=args.workers,
@@ -306,6 +320,9 @@ if __name__ == "__main__":
             scheduler.load_state_dict(cp['scheduler'])
 
     model.setmode("segment")
+    if args.scratch:
+        model.set_encoder_grads(True)
+
     train(total_epochs=args.epochs,
           last_epoch=last_epoch,
           model=model,

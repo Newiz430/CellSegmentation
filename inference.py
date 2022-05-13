@@ -28,7 +28,7 @@ def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='
     return probs.cpu().numpy()
 
 
-def sample(trainset, probs, tiles_per_pos, topk_neg):
+def sample(trainset, probs, tiles_per_pos, topk_neg, pos_neg_ratio):
     """找出概率为 top-k 的图像块，制作迭代使用的数据集。"""
 
     groups = np.array(trainset.tileIDX)
@@ -39,7 +39,7 @@ def sample(trainset, probs, tiles_per_pos, topk_neg):
         topk = topk_neg if trainset.labels[groups[i]] == 0 else trainset.labels[groups[i]] * tiles_per_pos
         index[i] = groups[i] != groups[(i + topk) % len(groups)]
 
-    p, n = trainset.make_train_data(list(order[index]))
+    p, n = trainset.make_train_data(list(order[index]), pos_neg_ratio)
     print("Training data is sampled. (Pos samples: {} | Neg samples: {})".format(p, n))
 
 

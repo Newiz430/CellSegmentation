@@ -41,14 +41,16 @@ parser.add_argument('-w', '--workers', default=4, type=int,
 parser.add_argument('--test_every', default=1, type=int,
                     help='validate every (default: 1) epoch(s). To use all data for training, '
                          'set this greater than --epochs')
-parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
-                    help='k tiles are from a single positive cell (default: 1, standard MIL)')
-parser.add_argument('-n', '--topk_neg', default=30, type=int,
-                    help='top k tiles from a negative image (default: 30, standard MIL)')
 parser.add_argument('-t', '--tile_size', type=int, default=32,
                     help='size of a certain tile (default: 32)')
 parser.add_argument('-i', '--interval', type=int, default=20,
                     help='interval between adjacent tiles (default: 20)')
+parser.add_argument('-k', '--tiles_per_pos', default=1, type=int,
+                    help='k tiles are from a single positive cell (default: 1)')
+parser.add_argument('-n', '--topk_neg', default=30, type=int,
+                    help='top k tiles from a negative image (default: 30)')
+parser.add_argument('-R', '--pos_neg_ratio', default=0.5, type=float,
+                    help='ratio of sample instances \'pos/neg\' (default: 0.5, unfix this by setting it to None)')
 parser.add_argument('-c', '--threshold', type=float, default=0.95,
                     help='minimal prob for tiles to show in generating heatmaps (default: 0.95)')
 parser.add_argument('--scratch', action="store_true",
@@ -113,7 +115,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
                 trainset.setmode(1)
 
                 probs = inference_tiles(train_loader, model, device, epoch, total_epochs)
-                sample(trainset, probs, tiles_per_pos, topk_neg)
+                sample(trainset, probs, tiles_per_pos, topk_neg, pos_neg_ratio=args.pos_neg_ratio)
 
                 trainset.setmode(3)
                 loss = train_tile(train_loader, epoch, total_epochs, model, device, crit_cls, optimizer,
@@ -140,7 +142,11 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
 
                     add_scalar_metrics(writer, epoch, metrics_t)
 
-                save_model(epoch, model, optimizer, scheduler, output_path)
+                # --------------------------
+                # --------------------------
+                # --------------------------
+                if epoch >= args.epochs - 1:
+                    save_model(epoch, model, optimizer, scheduler, output_path)
 
             except KeyboardInterrupt:
                 save_model(epoch, model, optimizer, scheduler, output_path)

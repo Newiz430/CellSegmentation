@@ -164,19 +164,42 @@ class LystoDataset(Dataset):
         """
         self.mode = mode
 
-    def make_train_data(self, idxs):
+    def make_train_data(self, idxs, pos_neg_ratio: float = None):
         # 制作 tile mode 训练用数据集，当 tile 对应的图像的 label 为 n 时标签为 1 ，否则为 0
-        self.train_data = [(self.tileIDX[i], self.tiles_grid[i],
-                            0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs]
-        # if shuffle:
-        #     self.train_data = random.sample(self.train_data, len(self.train_data))
+        self.train_data = np.array([(self.tileIDX[i], self.tiles_grid[i],
+                                     0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs])
 
         pos = 0
         for _, _, label in self.train_data:
             pos += label
+        neg = len(self.train_data) - pos
 
-        # 返回正负样本数目
-        return pos, len(self.train_data) - pos
+        # fix pos-neg ratio
+        np.random.shuffle(self.train_data)
+        if pos_neg_ratio is not None:
+            if pos > int(neg * pos_neg_ratio):
+                flag = 1
+                n = pos - int(neg * pos_neg_ratio)
+                pos = int(neg * pos_neg_ratio)
+                print('Note: Positive superpixels are pruned to meet the pos_neg_ratio. ')
+            elif neg > int(pos / pos_neg_ratio):
+                flag = 0
+                n = neg - int(pos / pos_neg_ratio)
+                neg = int(pos / pos_neg_ratio)
+                print('Note: Negative superpixels are pruned to meet the pos_neg_ratio. ')
+            else:
+                return pos, neg
+
+            excess = []
+            for i, (_, _, label) in enumerate(self.train_data):
+                if label == flag:
+                    excess.append(i)
+                if len(excess) == n:
+                    break
+
+            self.train_data = np.delete(self.train_data, excess, 0)
+
+        return pos, neg
 
     def __getitem__(self, idx):
 
