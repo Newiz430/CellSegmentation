@@ -145,7 +145,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
                 # --------------------------
                 # --------------------------
                 # --------------------------
-                if epoch >= args.epochs - 1:
+                if epoch >= args.epochs:
                     save_model(epoch, model, optimizer, scheduler, output_path)
 
             except KeyboardInterrupt:
