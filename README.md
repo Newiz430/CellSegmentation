@@ -53,8 +53,8 @@ Well this project is not well refactored for now and if you really wanna try thi
 - Train tile classifier by `python train_tile.py`
 - Test the classifier and get heatmaps by `python test_tile.py`
 - Train segmentation network by `python train_seg.py`
-- Test segmentation network and get masks by `python train_seg.py --draw_masks`
-- Test segmentation network and get localization points by `python train_seg.py --detect`
+- Test segmentation network and get masks by `python test_seg.py --draw_masks`
+- Test segmentation network and get localization points by `python test_seg.py --detect`
 
 and use arguments you like. You can find arguments list in the source code file. 
 
