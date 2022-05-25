@@ -66,12 +66,12 @@ def train_ensemble(total_epochs, idx, last_epoch, test_every, model, device, cri
     fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_reg_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+    # training results will be saved in 'output_path/<timestamp>-image-training.csv'
     if test_every <= args.epochs:
         fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
         fconv.write('epoch,mse,qwk\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
+    # validation results will be saved in 'output_path/<timestamp>-image-validation.csv'
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
@@ -138,7 +138,7 @@ def train_ensemble(total_epochs, idx, last_epoch, test_every, model, device, cri
 
 
 def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
-    """用 .pth 格式保存模型。"""
+    """Save model as a .pth file. """
     # save params of resnet encoder and image head only
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
                               if k.startswith(model.encoder_prefix +

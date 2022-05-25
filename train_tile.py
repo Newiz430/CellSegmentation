@@ -72,30 +72,31 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
           threshold, tiles_per_pos, topk_neg, output_path):
     """pt.2: tile classifier training.
 
-    :param last_epoch:      上一次迭代的次数（当继续训练时）
-    :param total_epochs:    迭代总次数
-    :param test_every:      每验证一轮间隔的迭代次数
-    :param model:           网络模型
-    :param device:          模型所在的设备
-    :param crit_cls:        分类损失函数
-    :param optimizer:       优化器
-    :param scheduler:       学习率调度器
-    :param threshold:       验证模型所用的置信度
-    :param tiles_per_pos:   在**单个阳性细胞**上选取的图像块数 (topk_pos = tiles_per_pos * label)
-    :param topk_neg:        每次在阴性细胞图像上选取的 top-k tile **总数**
-    :param output_path:     保存模型文件和训练数据结果的目录
+    :param total_epochs:    total number of training epochs
+    :param last_epoch:      previous number of training epochs (if resuming training)
+    :param test_every:      epochs per validation
+    :param model:           nn.Module
+    :param device:          cpu or cuda
+    :param crit_cls:        loss function of classification
+    :param optimizer:       gradient optimizer of model training
+    :param scheduler:       learning rate scheduler
+    :param threshold:       confidence used in validation
+    :param tiles_per_pos:   k_p, the number of tiles selected on ``a single pos cell``
+                            ($topk_pos = tiles_per_pos * label$)
+    :param topk_neg:        k_n, the number of tiles selected on ``the entire neg image``
+    :param output_path:     directory of model files and training data results
     """
 
     # open output file
     fconv = open(os.path.join(output_path, '{}-tile-training.csv'.format(now)), 'w')
     fconv.write('epoch,tile_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-tile-training.csv
+    # training results will be saved in 'output_path/<timestamp>-tile-training.csv'
     if test_every <= args.epochs:
         fconv = open(os.path.join(output_path, '{}-tile-validation.csv'.format(now)), 'w')
         fconv.write('epoch,tile_error,tile_fpr,tile_fnr\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-tile-validation.csv
+    # validation results will be saved in 'output_path/<timestamp>-tile-validation.csv'
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
@@ -158,7 +159,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, optimiz
 
 
 def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt2'):
-    """用 .pth 格式保存模型。"""
+    """Save model as a .pth file. """
     # save params of resnet encoder, image head and tile head only
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
                               if k.startswith(model.encoder_prefix +

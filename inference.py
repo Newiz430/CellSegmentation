@@ -7,7 +7,7 @@ from dataset import categorize, de_categorize
 
 
 def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='train'):
-    """前馈推导一次模型，获取实例分类概率。"""
+    """Forward inference to obtain instance classification probs. """
 
     model.eval()
 
@@ -19,17 +19,17 @@ def inference_tiles(loader, model, device, epoch=None, total_epochs=None, mode='
         for i, input in enumerate(tile_bar):
             if mode == 'train':
                 input = input[0]
-            # softmax 输出 [[a,b],[c,d]] shape = batch_size*2
+            # softmax -- [[a,b],[c,d]] shape = batch_size * 2
             output = model(input.to(device)) # input: [2, b, c, h, w]
             output = F.softmax(output, dim=1)
-            # detach()[:,1] 取出 softmax 得到的概率，产生：[b, d, ...]
-            # input.size(0) 返回 batch 中的实例数量
+            # detach()[:,1] extracts probs given by softmax: [b, d, ...]
+            # input.size(0) returns the number of instances in one batch
             probs[i * loader.batch_size:i * loader.batch_size + input.size(0)] = output.detach()[:, 1].clone()
     return probs.cpu().numpy()
 
 
 def sample(trainset, probs, tiles_per_pos, topk_neg, pos_neg_ratio):
-    """找出概率为 top-k 的图像块，制作迭代使用的数据集。"""
+    """Select top-k superpixels to create a instance training set. """
 
     groups = np.array(trainset.tileIDX)
     order = np.lexsort((probs, groups))
@@ -45,7 +45,7 @@ def sample(trainset, probs, tiles_per_pos, topk_neg, pos_neg_ratio):
 
 def inference_image(loader, model, device, epoch=None, total_epochs=None, mode='train', cls_limit=False,
                     return_id=False):
-    """前馈推导一次模型，获取图像级的分类概率和回归预测值。"""
+    """Forward inference to obtain image-level classification probs and pos cell counts. """
 
     model.eval()
 

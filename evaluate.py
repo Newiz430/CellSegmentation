@@ -6,29 +6,29 @@ from metrics import calc_err, calc_map, qwk
 from train import weighted_mse
 
 def evaluate_tile(valset, probs, tiles_per_pos, threshold):
-    """tile mode 的验证"""
+    """evaluation of tile mode. """
 
     val_groups = np.array(valset.tileIDX)
 
-    order = np.lexsort((probs, val_groups)) # 对 tile 按预测概率排序
+    order = np.lexsort((probs, val_groups)) # sort tiles by prediction
     val_groups = val_groups[order]
     val_probs = probs[order]
 
     val_index = np.array([prob > threshold for prob in val_probs])
 
-    # 制作分类用的 label：根据计数标签 = n，前 n * tiles_per_pos 个 tile 为阳性
+    # make labels used by classification: GT counts = c and set top-``c * tiles_per_pos`` tiles as positive
     labels = np.zeros(len(val_probs))
     for i in range(1, len(val_probs) + 1):
         if i == len(val_probs) or val_groups[i] != val_groups[i - 1]:
             labels[i - valset.labels[val_groups[i - 1]] * tiles_per_pos: i] = [1] * valset.labels[val_groups[i - 1]] * tiles_per_pos
 
-    # 计算错误率、FPR、FNR
+    # calculate error rate、FPR、FNR
     err, fpr, fnr = calc_err(val_index, labels)
     return err, fpr, fnr
 
 
 def evaluate_image(valset, categories, counts):
-    """image mode 的验证，probs 应为二维数组，第二维的大小为 7。"""
+    """Evaluation of image mode. """
 
     # map = calc_map(F.one_hot(torch.tensor(categories, dtype=torch.int64), num_classes=6).numpy(),
     #                F.one_hot(torch.tensor(valset.cls_labels, dtype=torch.int64), num_classes=6).numpy())

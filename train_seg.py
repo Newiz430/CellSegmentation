@@ -73,13 +73,13 @@ args = parser.parse_args()
 def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_path):
     """pt.3: cell segmentation training.
 
-    :param total_epochs:    迭代总次数
-    :param last_epoch:      上一次迭代的次数（当继续训练时）
-    :param model:           网络模型
-    :param device:          模型所在的设备
-    :param optimizer:       优化器
-    :param scheduler:       学习率调度器
-    :param output_path:     保存模型文件和训练数据结果的目录
+    :param total_epochs:    total number of training epochs
+    :param last_epoch:      previous number of training epochs (if resuming training)
+    :param model:           nn.Module
+    :param device:          cpu or cuda
+    :param optimizer:       gradient optimizer of model training
+    :param scheduler:       learning rate scheduler
+    :param output_path:     directory of model files and training data results
     """
 
     fconv = open(os.path.join(output_path, '{}-seg-training.csv'.format(now)), 'w')
@@ -129,7 +129,7 @@ def train(total_epochs, last_epoch, model, device, optimizer, scheduler, output_
 
 
 def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt3'):
-    """用 .pth 格式保存模型。"""
+    """save model as a .pth file. """
     # save all params
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
                               if k.startswith(model.encoder_prefix +
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         probs = inference_tiles(loader, model, device)
 
         def rank(dataset, probs, threshold):
-            """按概率对 tile 排序，便于与置信度进行比较。"""
+            """Sort tiles by inference probabilities. """
 
             groups = np.array(dataset.tileIDX)
             tiles = np.array(dataset.tiles_grid)

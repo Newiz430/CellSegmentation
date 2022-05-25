@@ -220,13 +220,14 @@ def cell_detect(testset, resume=False, output_image=True, output_path=None, meth
                 batch_counts = np.concatenate((batch_counts, output_reg))
                 model.setmode("segment")
 
-            # 把每个 batch 中的 mask 拿出来操作
+            # iterate mask images over every batch
             for i, mask in enumerate(output):
                 mask = np.uint8(255 * mask)  # no threshold
-                patch_id = b * len(output) + i  # mask 的 patch 索引，用于查找对应的 slide
-                slideidx = testset.imageIDX[patch_id]  # slideidx 表示 mask 属于第几张图
-                mask_grid = testset.images_grid[patch_id]  # mask_grid 表示 mask 在 slide 上的位置(左上角的坐标)
-                # 判断当前 imageIDX，如果还是这一张，就继续填充，不是，就进行聚类、检测、输出、释放内存，新建下一张图
+                patch_id = b * len(output) + i  # patch index of a mask for searching for the mapped slide
+                slideidx = testset.imageIDX[patch_id]  # slideidx: which picture does the mask correspond to
+                mask_grid = testset.images_grid[patch_id]  # mask_grid: calibrate mask to the slide (upper left coord)
+                # judge the current imageIDX, continue filling ----------- if the index does not change
+                # do clustering, detecting, outputting and releasing mem - otherwise
                 if imageIDX is None:
                     imageIDX = slideidx
                     image_file = os.path.splitext(testset.files[imageIDX])[0]

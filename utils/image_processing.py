@@ -22,7 +22,7 @@ def overlap_mask(img, img_bin, postprocess=True, min_object_size=300, hole_area_
         img_bin = remove_small_regions(img_bin, min_object_size=min_object_size,
                                        hole_area_threshold=hole_area_threshold)
     for i in range(3):
-        img[:, :, i] = img[:, :, i] * 0.5 + np.uint8(255 * img_bin) * 0.5  # 半黑色原图 + 半白色掩码
+        img[:, :, i] = img[:, :, i] * 0.5 + np.uint8(255 * img_bin) * 0.5  # half black image + half white mask
     if save is not None:
         io.imsave(save, img)
     return img
@@ -50,12 +50,12 @@ def locate_cells(dataset, slideidx, grids, discarded_grids=None):
 
 
 def save_images(dataset, prefix, output_path, num_of_imgs=0):
-    """把 hdf5 数据中的图像以 <name>_<idx>.png 的名称导出。
+    """Export images in hdf5 data as '<name>_<idx>.png'.
 
     :param dataset:     LystoDataset
-    :param prefix:      所有图片共享的名称部分
-    :param output_path: 输出图片路径
-    :param num_of_imgs: 选择输出图片的数目（前 n 个）
+    :param prefix:      shared prefix of all images
+    :param output_path: output directory
+    :param num_of_imgs: number of output images (first n images)
     """
 
     if not os.path.exists(output_path):
@@ -77,7 +77,8 @@ def save_images(dataset, prefix, output_path, num_of_imgs=0):
 
 
 def generate_masks(dataset, tiles, groups, preprocess, save_masks=True, output_path="./data/pseudomask"):
-    """把预测得到的阳性细胞区域做成二值掩码。
+    """Transform predicted pos cell regions into binary masks.
+
     tiles: up-left coordinates of tiles
     groups: image indices for each tile
     """
@@ -132,7 +133,7 @@ def preprocess_masks(img, mask):
 #             grid = list(map(int, tiles[idx + i * topk]))
 #             mask[grid[0]: grid[0] + testset.size,
 #                  grid[1]: grid[1] + testset.size] = tile_mask
-#             # 输出信息
+#             # output info
 #             print("prob_{}:{}".format(i, probs[idx + i * topk]))
 #             w = csv.writer(csv_file)
 #             w.writerow([i, '{}'.format(grid), probs[idx + i * topk]])
@@ -210,7 +211,8 @@ def crop_wsi(data_path, max_size=5e+7):
             else:
                 border = np.linspace(0, wsi.shape[1], 5 + 1, dtype=int)
                 for i in range(5):
-                    io.imsave(os.path.join(data_path, "{}-{}.png".format(file, border[i])), wsi[:, border[i]:border[i + 1]])
+                    io.imsave(os.path.join(data_path, "{}-{}.png".format(file, border[i])),
+                              wsi[:, border[i]:border[i + 1]])
 
                 shutil.move(os.path.join(data_path, file + '.png'), backup_path)
 

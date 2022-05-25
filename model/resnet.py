@@ -117,7 +117,7 @@ class MILResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
-        # encoder 以下部分
+        # heads beneath the encoder
         def init_tile_modules():
             self.avgpool_tile = nn.AdaptiveAvgPool2d((1, 1))
             self.maxpool_tile = nn.AdaptiveMaxPool2d((1, 1))
@@ -152,7 +152,7 @@ class MILResNet(nn.Module):
             )
 
         def init_seg_modules():
-            # 图像上采样卷积层
+            # upsample convolution layers
             self.upconv1 = self.upsample_conv(512 * expansion, 256 * expansion)
             self.upconv2 = self.upsample_conv(512 * expansion, 256 * expansion)
             self.upconv3 = self.upsample_conv(256 * expansion, 128 * expansion)
@@ -281,17 +281,17 @@ class MILResNet(nn.Module):
 
             out_seg = F.interpolate(x4.clone(), size=19, mode="bilinear", align_corners=True)   # out_seg: [n, 2048, 19, 19]
             out_seg = self.upconv1(out_seg)                                                     # [n, 1024, 19, 19]
-            out_seg = torch.cat([out_seg, x3], dim=1)                                           # 连接两层，输出 [n, 2048, 19, 19]
+            out_seg = torch.cat([out_seg, x3], dim=1)                                           # concat: [n, 2048, 19, 19]
             out_seg = self.upconv2(out_seg)                                                     # [n, 1024, 19, 19]
 
             out_seg = F.interpolate(out_seg, size=38, mode="bilinear", align_corners=True)      # [n, 1024, 38, 38]
             out_seg = self.upconv3(out_seg)                                                     # [n, 512, 38, 38]
-            out_seg = torch.cat([out_seg, x2], dim=1)                                           # 连接两层，输出 [n, 1024, 38, 38]
+            out_seg = torch.cat([out_seg, x2], dim=1)                                           # concat: [n, 1024, 38, 38]
             out_seg = self.upconv4(out_seg)                                                     # [n, 512, 38, 38]
 
             out_seg = F.interpolate(out_seg, size=75, mode="bilinear", align_corners=True)      # [n, 512, 75, 75]
             out_seg = self.upconv5(out_seg)                                                     # [n, 256, 75, 75]
-            out_seg = torch.cat([out_seg, x1], dim=1)                                           # 连接两层，输出 [n, 512, 75, 75]
+            out_seg = torch.cat([out_seg, x1], dim=1)                                           # concat: [n, 512, 75, 75]
             out_seg = self.upconv6(out_seg)                                                     # [n, 256, 75, 75]
 
             out_seg = F.interpolate(out_seg, size=150, mode="bilinear", align_corners=True)     # [n, 256, 150, 150]

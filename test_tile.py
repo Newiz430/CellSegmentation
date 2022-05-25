@@ -43,14 +43,15 @@ args = parser.parse_args()
 
 def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
     """
-    :param testset:         测试数据集
-    :param batch_size:      Dataloader 打包的小 batch 大小
-    :param workers:         Dataloader 使用的进程数
-    :param model:           网络模型
-    :param output_path:     保存模型文件的目录
+    :param testset:         besting set
+    :param batch_size:      batch size used by Dataloader
+    :param workers:         number of PIDs Dataloader uses to load data
+    :param model:           nn.Module
+    :param output_path:     directory of test results
     """
 
-    # 热图中各个 tile 的信息保存在 output_path/<timestamp>-pred-e<epoch>-p<tilesize>-i<interval>-c<threshold>.csv
+    # info of each tile in the heatmap saved in
+    # 'output_path/<timestamp>-pred-e<epoch>-p<tilesize>-i<interval>-c<threshold>.csv'
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
         now, epoch, args.tile_size, args.interval, args.threshold)), 'w', newline="")
     w = csv.writer(fconv)
@@ -60,7 +61,7 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
     fconv.close()
 
     def rank(testset, probs):
-        """按概率对 tile 排序，便于与置信度进行比较。"""
+        """Sort tiles by inference probabilities. """
 
         groups = np.array(testset.tileIDX)
         tiles = np.array(testset.tiles_grid)
@@ -103,7 +104,7 @@ def test_tile(loader, model, epoch, reg_limit, reg_loader, output_path):
         probs = probs[indices]
         groups = groups[indices]
 
-    # 生成热图
+    # generate heatmaps
     fconv = open(os.path.join(output_path, '{}-pred-e{}-p{}-i{}-c{}.csv'.format(
         now, epoch, args.tile_size, args.interval, args.threshold)), 'a', newline="")
     heatmap(testset, tiles, probs, groups, fconv, output_path)

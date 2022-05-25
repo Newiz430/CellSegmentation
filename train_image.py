@@ -79,7 +79,7 @@ def train_cls(total_epochs, last_epoch, test_every, model, device, crit_cls, opt
     fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_cls_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+    # training results will be saved in 'output_path/<timestamp>-image-training.csv'
 
     validate = lambda epoch, test_every: (epoch + 1) % test_every == 0
     start = int(time.time())
@@ -142,12 +142,12 @@ def train_reg(total_epochs, last_epoch, test_every, model, device, crit_reg, opt
     fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_reg_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+    # training results will be saved in 'output_path/<timestamp>-image-training.csv'
     if test_every <= args.epochs:
         fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
         fconv.write('epoch,mse,qwk\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
+    # validation results will be saved in 'output_path/<timestamp>-image-validation.csv'
 
     if thresh is not None:
         scoringset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=trainset.organ,
@@ -245,16 +245,16 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
           output_path, *, thresh=None):
     """pt.1: image assessment training.
 
-    :param total_epochs:    迭代总次数
-    :param last_epoch:      上一次迭代的次数（当继续训练时）
-    :param test_every:      每验证一轮间隔的迭代次数
-    :param model:           网络模型
-    :param device:          模型所在的设备
-    :param crit_cls:        分类损失函数
-    :param crit_reg:        回归损失函数
-    :param optimizer:       优化器
-    :param scheduler:       学习率调度器
-    :param output_path:     保存模型文件和训练数据结果的目录
+    :param total_epochs:    total number of training epochs
+    :param last_epoch:      previous number of training epochs (if resuming training)
+    :param test_every:      epochs per validation
+    :param model:           nn.Module
+    :param device:          cpu or cuda
+    :param crit_cls:        loss function of classification
+    :param crit_reg:        loss function of regression
+    :param optimizer:       gradient optimizer of model training
+    :param scheduler:       learning rate scheduler
+    :param output_path:     directory of model files and training data results
     """
 
     global train_loader
@@ -263,12 +263,12 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
     fconv = open(os.path.join(output_path, '{}-image-training.csv'.format(now)), 'w')
     fconv.write('epoch,image_cls_loss,image_reg_loss,image_loss,image_seg_loss\n')
     fconv.close()
-    # 训练结果保存在 output_path/<timestamp>-image-training.csv
+    # training results will be saved in 'output_path/<timestamp>-image-training.csv'
     if test_every <= args.epochs:
         fconv = open(os.path.join(output_path, '{}-image-validation.csv'.format(now)), 'w')
         fconv.write('epoch,image_map,mse,qwk\n')
         fconv.close()
-    # 验证结果保存在 output_path/<timestamp>-image-validation.csv
+    # validation results will be saved in 'output_path/<timestamp>-image-validation.csv'
 
     if thresh is not None:
         scoringset = LystoDataset(os.path.join(training_data_path, "training.h5"), train=False, organ=trainset.organ,
@@ -370,7 +370,7 @@ def train(total_epochs, last_epoch, test_every, model, device, crit_cls, crit_re
 
 
 def save_model(epoch, model, optimizer, scheduler, output_path, prefix='pt1'):
-    """用 .pth 格式保存模型。"""
+    """Save model as a .pth file. """
     # save params of resnet encoder and image head only
     state_dict = OrderedDict({k: v for k, v in model.state_dict().items()
                               if k.startswith(model.encoder_prefix +

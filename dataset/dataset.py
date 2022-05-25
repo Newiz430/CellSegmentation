@@ -31,14 +31,14 @@ class LystoDataset(Dataset):
     def __init__(self, filepath=None, tile_size=None, interval=None, train=True, organ=None,
                  augment=False, kfold=10, shuffle=False, num_of_imgs=0, _ensemble_init=False):
         """
-        :param filepath:    hdf5 数据文件路径
-        :param tile_size:   一个 tile 的边长
-        :param interval:    选取 tile 的间隔步长
-        :param train:       训练集 / 验证集，默认为训练集
-        :param organ:       设置特定的组织
-        :param augment:     启用数据增强
-        :param kfold:       k 折交叉验证的参数，数据集每隔 k 份抽取 1 份作为验证集，默认值为 10
-        :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
+        :param filepath:    path of hdf5 data file
+        :param tile_size:   the length of the side of a certain superpixel
+        :param interval:    stride of sliding window
+        :param train:       training set or development set
+        :param organ:       if categorise data by organ
+        :param augment:     if use data augmentation
+        :param kfold:       k of k-fold cross-validation, 10 by default
+        :param num_of_imgs: first n images are used only, set this to 0 to run with the whole data (for debugging)
         """
 
         super(LystoDataset, self).__init__()
@@ -56,13 +56,13 @@ class LystoDataset(Dataset):
 
         self.train = train
         self.organ = organ
-        self.organs = []            # 全切片来源，list ( 20000 )
+        self.organs = []            # organ type of image. list ( 20000 )
         self.images = []            # array ( 20000 * 299 * 299 * 3 )
-        self.labels = []            # 图像中的阳性细胞数目，list ( 20000 )
-        self.cls_labels = []        # 按数目把图像分为 7 类，存为类别标签，list ( 20000 )
-        self.transformIDX = []      # 数据增强的类别，list ( 20000 )
-        self.tileIDX = []           # 每个 tile 对应的图像编号，list ( 20000 * n )
-        self.tiles_grid = []        # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
+        self.labels = []            # class of image (pos / neg). list ( 20000 )
+        self.cls_labels = []        # 7-classification of image. list ( 20000 )
+        self.transformIDX = []      # method of augmentation. list ( 20000 )
+        self.tileIDX = []           # image index for each tile. list ( 20000 * n )
+        self.tiles_grid = []        # upper left coords of tiles on the image. list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -104,7 +104,6 @@ class LystoDataset(Dataset):
             for i, (org, img, label) in enumerate(tqdm(zip(f['organ'], f['x'], f['y']), desc="loading images")):
                 org = org.decode('utf-8')
 
-                # 调试用代码
                 if num_of_imgs != 0 and i == num_of_imgs:
                     break
 
@@ -165,7 +164,7 @@ class LystoDataset(Dataset):
         self.mode = mode
 
     def make_train_data(self, idxs, pos_neg_ratio: float = None):
-        # 制作 tile mode 训练用数据集，当 tile 对应的图像的 label 为 n 时标签为 1 ，否则为 0
+        # set tile label to 1 if counts of the coordinated image > 0 else 0
         self.train_data = np.array([(self.tileIDX[i], self.tiles_grid[i],
                                      0 if self.labels[self.tileIDX[i]] == 0 else 1) for i in idxs])
 
@@ -348,10 +347,10 @@ class LystoTestset(Dataset):
 
     def __init__(self, filepath, tile_size=None, interval=None, organ=None, num_of_imgs=0):
         """
-        :param filepath:    数据文件路径 (hdf5)
-        :param interval:    选取 tile 的间隔步长
-        :param tile_size:   一个 tile 的边长
-        :param num_of_imgs: 调试程序用参数，表示用数据集的前 n 张图片构造数据集，设为 0 使其不起作用
+        :param filepath:    path of hdf5 data file
+        :param interval:    stride of sliding window
+        :param tile_size:   the length of the side of a certain superpixel
+        :param num_of_imgs: first n images are used only, set this to 0 to run with the whole data (for debugging)
         """
 
         super(LystoTestset, self).__init__()
@@ -363,10 +362,10 @@ class LystoTestset(Dataset):
 
         self.organ = organ
         self.id = []
-        self.organs = []  # 全切片来源，list ( 20000 )
+        self.organs = []  # organ type of image. list ( 20000 )
         self.images = []  # list ( 20000 * 299 * 299 * 3 )
-        self.tileIDX = []  # 每个 tile 对应的图像编号，list ( 20000 * n )
-        self.tiles_grid = []  # 每张图像中选取的像素 tile 的左上角坐标点，list ( 20000 * n * 2 )
+        self.tileIDX = []  # image index for each tile. list ( 20000 * n )
+        self.tiles_grid = []  # upper left coords of tiles on the image. list ( 20000 * n * 2 )
         self.interval = interval
         self.tile_size = tile_size
 
@@ -587,7 +586,6 @@ class MaskTestset(Dataset):
                     patches_grid.append((x, y))
                 if patches_grid[-1][1] != yborder:
                     patches_grid.append((x, yborder))
-                # return patches_grid
 
             if patches_grid[-1][0] != xborder:
                 for y in np.arange(0, yborder + 1, interval[1]):
@@ -653,7 +651,7 @@ class PointTestset(Dataset):
     def __init__(self, data_path="data/qupath/lysto", filename_pattern="(?<=test_)\d*", num_of_imgs=0):
 
         """
-        filename_pattern: 如果按文件名排序并非数字顺序，使用该正则模式字符串将文件名中的数字提取出来
+        filename_pattern: regex pattern used to extract numbers from file name strings
         """
 
         super(PointTestset, self).__init__()
@@ -719,11 +717,11 @@ class PointTestset(Dataset):
 
 def get_tiles(image, interval, size):
     """
-    划分实例。
-    :param image: 输入图片矩阵，299 x 299 x 3
-    :param interval: 取 tile 坐标点的间隔
-    :param size: 单个 tile 的大小
-    :return: 每个实例 tile 的左上角坐标的列表
+    get tiles from an image by sliding window.
+    :param image:       input image matrix, 299 x 299 x 3
+    :param interval:    stride of sliding window
+    :param size:        the length of the side of a certain tile
+    :return:            list of upper left coords of tiles
     """
 
     tiles = []
@@ -745,7 +743,7 @@ def get_tiles(image, interval, size):
 
 
 def categorize(x):
-    """按 LYSTO 划分的 7 个细胞数目类别划分分类标签。"""
+    """Split counts into 7 classes. Same as LYSTO scoring criterion. """
     if x == 0:
         label = 0
     elif x <= 5:
@@ -764,7 +762,7 @@ def categorize(x):
 
 
 def de_categorize(label):
-    """给出每个 label 对应的范围。"""
+    """Transform 7 classes into count ranges. """
     if label == 0:
         xmin, xmax = 0, 0
     elif label == 1:
@@ -799,7 +797,7 @@ if __name__ == '__main__':
         print('Dry run : [{}/{}]\r'.format(idx + 1, len(val_loader)))
     print("Length of dataset: {}".format(len(val_loader.dataset)))
 
-    # 查看第一张图片
+    # Output the very first image
     print("The first training image: ")
     plt.imshow(imageSet.images[0])
     plt.show()

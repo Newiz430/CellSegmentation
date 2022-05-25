@@ -12,12 +12,12 @@ from .losses import DiceLoss
 def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer, scheduler, gamma):
     """Tile training for one epoch.
 
-    :param loader:          训练集的迭代器
-    :param epoch:           当前迭代次数
-    :param total_epochs:    迭代总次数
-    :param model:           网络模型
-    :param criterion:       损失函数（criterion_cls）
-    :param optimizer:       优化器
+    :param loader:          DataLoader of training set
+    :param epoch:           current number of epochs
+    :param total_epochs:    total number of epochs
+    :param model:           nn.Module
+    :param criterion:       loss of classification (criterion_cls)
+    :param optimizer:       gradient optimizer of model training
     """
 
     # tile training, dataset.mode = 3
@@ -31,7 +31,7 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
 
         optimizer.zero_grad()
         output = model(data.to(device), freeze_bn=True)
-        loss = criterion(output, label.to(device)) * gamma  # CrossEntropy 本身携带了 softmax()
+        loss = criterion(output, label.to(device)) * gamma  # no need of softmax() with pytorch CrossEntropy
 
         loss.backward()
         optimizer.step()
@@ -51,16 +51,16 @@ def train_tile(loader, epoch, total_epochs, model, device, criterion, optimizer,
 def train_image(loader, epoch, total_epochs, model, device, crit_cls, crit_reg, optimizer, scheduler, alpha, beta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
-    :param loader:          训练集的迭代器
-    :param epoch:           当前迭代次数
-    :param total_epochs:    迭代总次数
-    :param model:           网络模型
-    :param crit_cls:        分类器损失函数
-    :param crit_reg:        回归损失函数
-    :param optimizer:       优化器
-    :param scheduler:       学习率调度器
-    :param alpha:            image_cls_loss 系数
-    :param beta:           image_reg_loss 系数
+    :param loader:          DataLoader of training set
+    :param epoch:           current number of epochs
+    :param total_epochs:    total number of epochs
+    :param model:           nn.Module
+    :param crit_cls:        loss of classification
+    :param crit_reg:        loss of regression
+    :param optimizer:       gradient optimizer of model training
+    :param scheduler:       learning rate scheduler
+    :param alpha:           image_cls_loss ratio
+    :param beta:            image_reg_loss ratio
     """
 
     # image training, dataset.mode = 5
@@ -211,18 +211,18 @@ def train_alternative(loader, epoch, total_epochs, model, device, crit_cls, crit
                       scheduler, threshold, alpha, beta, gamma, delta):
     """tile + image training for one epoch. image mode = image_cls + image_reg + image_seg
 
-    :param loader:          训练集的迭代器
-    :param epoch:           当前迭代次数
-    :param total_epochs:    迭代总次数
-    :param model:           网络模型
-    :param crit_cls:        分类器损失函数
-    :param crit_reg:        回归损失函数
-    :param optimizer:       优化器
-    :param scheduler:       学习率调度器
-    :param alpha:           tile_loss 系数
-    :param beta:            image_cls_loss 系数
-    :param gamma:           image_reg_loss 系数
-    :param delta:           image_seg_loss 系数
+    :param loader:          DataLoader of training set
+    :param epoch:           current number of epochs
+    :param total_epochs:    total number of epochs
+    :param model:           nn.Module
+    :param crit_cls:        loss of classification
+    :param crit_reg:        loss of regression
+    :param optimizer:       gradient optimizer of model training
+    :param scheduler:       learning rate scheduler
+    :param alpha:           tile_loss ratio
+    :param beta:            image_cls_loss ratio
+    :param gamma:           image_reg_loss ratio
+    :param delta:           image_seg_loss ratio
     """
 
     # alternative training, dataset.mode = 2
