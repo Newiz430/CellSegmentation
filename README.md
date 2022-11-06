@@ -41,11 +41,7 @@ We also tested our localization method in [LYON19](https://lyon19.grand-challeng
 
 Visit [LYSTO](https://lysto.grand-challenge.org/) to get data.
 
-DLBCL-IHC is not available for now. I won't upload this until this work is accepted. 
-
 ### Quick Start
-
-Well this project is not well refactored for now and if you really wanna try this...
 
 - Add image data in `./data`
 - Train cell counter by `python train_image.py`
