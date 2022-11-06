@@ -35,7 +35,6 @@ HSV channel separation and thresholding provide us fine-grained profile of posit
 Kappa = 0.9319, 4th in **Lymphocyte Assessment Hackathon** (LYSTO) Challenge. [Leaderboard](https://lysto.grand-challenge.org/evaluation/challenge/leaderboard/)
 
 We also tested our localization method in [LYON19](https://lyon19.grand-challenge.org/). 
-(I wonder what this acronym stands for)
 
 ### Dataset
 
