@@ -21,8 +21,6 @@ Taking immunohistochemistry-stained digital cell images as input, the model is m
 
 ### Adaptive top-k selection
 
-Supervised by counting labels. Needs a little elementary geometry. 
-
 ![](figures/topk.png)
 
 ### Mask refinement
