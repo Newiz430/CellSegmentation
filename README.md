@@ -2,9 +2,9 @@
 
 <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-v1.7.0-red.svg?logo=PyTorch&style=for-the-badge" /></a>
 
-This is the new multi-stage auto-immunoquantitative analytical model we proposed. 
+Source code for [PR'26] [A Novel Weakly Supervised Immunohistochemical Cell Segmentation method via Counting Labels](https://www.sciencedirect.com/science/article/pii/S0031320325013470?via%3Dihub).
 
-Special thanks to Dr. Cheng [@ShenghuaCheng](https://github.com/ShenghuaCheng) for contributing to this work 
+Special thanks to Hua Ye and Dr. Cheng [@ShenghuaCheng](https://github.com/ShenghuaCheng) for contributing to this work 
 and [WNLO](http://wnlo.hust.edu.cn/) for platform provision. 
 
 ### New MIL for immune cell pathological images
@@ -32,8 +32,6 @@ HSV channel separation and thresholding provide us fine-grained profile of posit
 
 Kappa = 0.9319, 4th in **Lymphocyte Assessment Hackathon** (LYSTO) Challenge. [Leaderboard](https://lysto.grand-challenge.org/evaluation/challenge/leaderboard/)
 
-We also tested our localization method in [LYON19](https://lyon19.grand-challenge.org/). 
-
 ### Dataset
 
 Visit [LYSTO](https://lysto.grand-challenge.org/) to get data.
@@ -53,6 +51,13 @@ and use arguments you like. You can find arguments list in the source code file.
 
 ### Citing
 
-... under construction ... stay tuned. 
-
-> 2021-2022 By Newiz
+```
+@article{ye2026novel,
+  title={A novel weakly supervised immunohistochemical cell segmentation method via counting labels},
+  author={Ye, Hua and Zhao, Ziwen and Liu, Xiuli and Ma, Jiabo and Liu, Sibo and Zeng, Shaoqun and Cheng, Shenghua},
+  journal={Pattern Recognition},
+  pages={112684},
+  year={2026},
+  publisher={Elsevier}
+}
+```
